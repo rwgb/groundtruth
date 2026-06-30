@@ -1,0 +1,11 @@
+{
+  "name": "groundtruth",
+  "owner": { "name": "Akash Khanna" },
+  "plugins": [
+    {
+      "name": "groundtruth",
+      "description": "Audits whether an agent actually did what it was asked. Catches the false 'Done': missed subtasks, stubbed/no-op work, false 'tests pass', hardcoded secrets, RLS holes, and standing project rules overridden anyway. Verdict card per turn; warn by default, opt-in block.",
+      "source": "./"
+    }
+  ]
+}
