@@ -16,7 +16,7 @@ function latestCard() {
   const direct = join(dir, sid + '.md');
   if (sid && existsSync(direct)) return direct;          // this session's card preferred
   try {
-    const md = readdirSync(dir).filter(f => f.endsWith('.md') && !f.includes('tier2'));
+    const md = readdirSync(dir).filter(f => f.endsWith('.md'));
     if (!md.length) return null;
     return join(dir, md.map(f => [f, statSync(join(dir, f)).mtimeMs]).sort((a, b) => b[1] - a[1])[0][0]);
   } catch { return null; }
@@ -30,10 +30,8 @@ if (!card) { out(C.grey + '○ GT'); process.exit(0); }     // installed + wired
 
 let verdict = '';
 try { verdict = (readFileSync(card, 'utf8').match(/VERDICT\s+[^\n]+/) || [''])[0]; } catch { /* unreadable */ }
-let t2 = 0;
-try { const tf = card.replace(/\.md$/, '.tier2.md'); if (existsSync(tf)) t2 = (readFileSync(tf, 'utf8').match(/^✗/gm) || []).length; } catch { /* none */ }
 
 if (/🔴/.test(verdict)) out(C.red + '🔴 GT');
 else if (/⏳/.test(verdict)) out(C.amber + '⏳ GT');
 else if (/🟡/.test(verdict)) { const n = (verdict.match(/(\d+)\s+finding/) || [])[1]; out(C.amber + '🟡 GT' + (n ? '·' + n : '')); }
-else out(t2 ? C.amber + '🟡 GT·t2(' + t2 + ')' : C.green + '🟢 GT');   // clean Tier-1, but flag a Tier-2 advisory
+else out(C.green + '🟢 GT');   // deterministic verdict clean

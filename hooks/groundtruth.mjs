@@ -244,8 +244,8 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
   // Class 4 — phantom ref (best-effort, WARN only): a NEW relative import whose target file is
   // absent from the working tree, resolved against the importing file's own directory. Bare/package
   // specifiers are skipped (can't resolve cheaply).
-  // ponytail: best-effort + WARN-only; the Tier-2 agent resolves symbols against the tree properly.
-  // Upgrade to deterministic resolution only if the agent misses real phantom refs.
+  // ponytail: best-effort + WARN-only — file-existence resolution, not full symbol resolution. Upgrade to
+  // proper resolution (a real resolver, or the roadmap LLM layer) only if this misses real phantom refs.
   let curFile = '', curLang = null, curSrc = false, sawC9 = false;
   for (const l of diff.split('\n')) {
     const h = l.match(/^\+\+\+ b\/(.+)$/);
@@ -864,7 +864,7 @@ export function renderCard(findings, { session = 'unknown', intent = '', blockEn
     `       means: ${means}`,
     ...(integrity ? integrity.split('\n').map(l => `  ${l}`) : []),
     ...(pendingRules ? [`  ⚪ ${pendingRules} rule(s) proposed from your docs await approval → /groundtruth-rules to review + arm`] : []),
-    `  ⚪ Scope-miss / spec-substitution / directive-override → judged by Tier-2 (separate) → <session>.tier2.md`,
+    `  ⚪ Deterministic verdict (no LLM). Semantic checks — spec-substitution, "rationalised past a rule", regression — are roadmap, not in this card.`,
   ].join('\n');
 }
 

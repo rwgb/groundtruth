@@ -20,8 +20,8 @@ Do this:
    - `approve-all` → arm all **clean** candidates only. Never auto-arm a review candidate — those need a human eye.
    - a list of ids → arm exactly those (a review candidate is allowed only when explicitly named).
    - empty / `list` → show the table, write nothing, and end with a crystal-clear next action the user can copy verbatim — e.g.:
-     > **To arm all N clean rules, reply with the whole line: `/groundtruth-rules approve-all`.** To pick specific ones: `/groundtruth-rules <id> <id>`. To skip for now: do nothing — nothing is enforced until you approve.
-     Always spell out the FULL command. Note for the user: `approve-all` (or a bare rule id) typed *on its own* is read as a command name and fails with "unknown command" — it only works as an argument on the same line as `/groundtruth-rules`.
+     > **To arm all N clean rules, reply with the whole line: `/groundtruth-rules approve-all`** — or just tell me "approve the clean rules" in plain words and I'll arm them. To pick specific ones: `/groundtruth-rules <id> <id>`. To skip for now: do nothing — nothing is enforced until you approve.
+     Note for the user: a bare `approve-all` or rule id typed *on its own* gets read as a command name and fails with "unknown command" — type it as an argument on the same line as `/groundtruth-rules`, or just ask in plain language (this command runs as me, so I can arm them from a natural-language request too).
 
 4. To arm: write `.claude/groundtruth/compiled-rules.json` as the union of (already-approved rules) + (newly approved candidates). For each rule keep only the runtime fields — `id`, `source`, `kind`, `file_re`, `line_re`, `severity`, `message`, and `unless_re` if present — and **drop** the proposal-only fields (`status`, `hits`, `sample`). Default `severity` to `"warn"`. **Preserve** the existing severity of any already-approved rule (never demote a human's `block` back to `warn`). Dedup by `id`. Write valid JSON (an array).
 

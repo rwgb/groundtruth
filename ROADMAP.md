@@ -22,7 +22,7 @@ Tracks `groundtruth-architecture.md` **v0.4**. What's built, and what's left to 
   semantic/LLM layer): 6 spec-substitution, 8 regression-blind, and the *semantic* versions of 5/7.
 - **Class 9 — special-casing / overfit (v0.6, warn-only)**: non-test source that detects it's under
   test/CI/audit (gaming Groundtruth's own env, or a CI/test env branch). Deterministic core only;
-  **deferred** (named, not half-built): 9c hardcoded-answer-lifted-from-a-test → Tier-2; 9d
+  **deferred** (named, not half-built): 9c hardcoded-answer-lifted-from-a-test → the LLM layer; 9d
   passes-only-the-visible-test → needs the hidden oracle, the LLM layer.
 - **Output-contract hardening (v0.6, warn-only)**: a compiled rule whose `unless_re` matches everything
   is surfaced as INERT (armed-but-neutered), and an inline exemption added the same turn as the violation
@@ -35,7 +35,7 @@ Tracks `groundtruth-architecture.md` **v0.4**. What's built, and what's left to 
   language/stack-general (any added line, any file). **B1** RLS-off-on-new-table + **B3** permissive
   `USING(true)`/constant-predicate policy are **Postgres/Supabase-specific** — they fire ONLY on added `.sql`
   lines and are a no-op on any other database/stack (additive, never a misfire). Block-grade; self-match-proof patterns.
-- **Fail-open → "NOT CHECKED" (v0.4)** — Bash/git blocked → Tier-2 records *unverified* and returns ok
+- **Fail-open (v0.4)** — if `git` / the diff is unavailable (Bash blocked, etc.), the hook returns ok
   without blocking; never a false green, never wedges the turn.
 - **§10 compiled rules (v0.4)** — prose rules (CLAUDE.md / skills) → deterministic predicates
   (`forbid_path` / `forbid_in_added`); `--watch-rules` PostToolUse marks dirty, the Stop agent compiles
@@ -96,4 +96,4 @@ Deeper analysis that also lands here: semantic intent↔diff matching (beyond fi
 
 Platform absorption (sell the **taxonomy**, not the plumbing) · false positives (warn-first,
 evidence-always) · rule-source ambiguity (auto-discovery + `groundtruth.rules`) · checker cost on the
-buyer's key (Tier-1-first, gated Tier-2, empty-diff fast-exit) · gate gaming (§14 anti-gaming).
+buyer's key (the per-turn audit is deterministic + free; only the opt-in `/groundtruth-rules-ai` uses the model, on demand) · gate gaming (§14 anti-gaming).

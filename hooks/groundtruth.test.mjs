@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * groundtruth.test.mjs — self-check for Groundtruth Tier-1 (run: `node groundtruth.test.mjs`).
- * Asserts the non-trivial logic: transcript extraction + the four classifiers,
- * including that the real share-card diff stays Tier-1-SILENT (it's a Class-7
- * case the Tier-2 agent owns, not a deterministic one). assert-based, no deps.
+ * Asserts the non-trivial logic: transcript extraction + the deterministic classifiers,
+ * including that an inline-feature diff stays SILENT (the "built inline vs its own unit"
+ * Class-7 judgment is the semantic/roadmap call, not a deterministic one). assert-based, no deps.
  */
 import assert from 'node:assert';
 import { mkdtempSync, writeFileSync as fsWrite, rmSync } from 'node:fs';
@@ -168,7 +168,7 @@ ok('C3 silent: a legitimately nested src/config.js DOES satisfy the claim (no ov
     repoSourceExts('/x', () => '').length > 10);
 }
 
-// ── Inline-feature case: Tier-1 must stay SILENT (the "built inline vs its own unit" Class-7 call is Tier-2's) ──
+// ── Inline-feature case: the deterministic checks must stay SILENT (the "built inline vs its own unit" Class-7 call is the semantic/roadmap layer, not deterministic) ──
 const inlineFeatureDiff = [
   '+++ b/src/upload.js',
   '+let _retryState = null;',
@@ -179,7 +179,7 @@ const inlineFeatureDiff = [
   '+export const upload = (f) => uploadWithBackoff(f);',
 ].join('\n');
 const scFindings = analyze({ claim: 'Added retry/backoff to the upload client.', diff: inlineFeatureDiff });
-ok('inline-feature diff trips NO Tier-1 class (correctly deferred to Tier-2)', scFindings.length === 0);
+ok('inline-feature diff trips NO deterministic class (correctly silent — it is a semantic/roadmap call)', scFindings.length === 0);
 
 // ── Audit mode: scanContent (whole-file debt scan, no diff/claim) ──
 const auditHits = scanContent('lib/foo.js', 'const x = 1;\n// TODO: handle errors\nimport { y } from "./missing-mod";\n');
