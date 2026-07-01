@@ -133,6 +133,13 @@ code — corrective pairs (``use `X` not `Y` `` / ``use `X` (not `Y`)``) and exp
 approve via `/groundtruth-rules`. Extraction stays deliberately narrow + literal; the permission gate, not
 a smarter parser, is what makes it safe to read every doc.
 
+**Re-proposal is automatic when a rule doc changes** — at session start, when the agent edits a doc via its
+Edit/Write tools (a `PostToolUse` recompile), and when *you* hand-edit a doc in your own editor (the `Stop`
+hook re-checks doc mtimes and recompiles if any is newer than the proposed set). So a rule you add or change
+shows up as a fresh candidate the next turn, no restart needed. Only the **proposed** set refreshes this way
+— nothing arms without `/groundtruth-rules`, and an already-armed rule keeps enforcing its approved text until
+you re-approve the change.
+
 **Nothing project-specific ships in the plugin** — it derives rules only from *your* repo's docs. For a
 file-scoped rule a sentence can't express (e.g. "no `import.meta` under `api/_lib/`" — the directory scope
 isn't in any doc line), drop a JSON array of rule objects at `.claude/groundtruth/seed-rules.json` in your

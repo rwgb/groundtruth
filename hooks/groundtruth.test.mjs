@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } f
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit } from './groundtruth.mjs';
+import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
 
 let pass = 0;
@@ -773,5 +773,12 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
 
 ok('loadGtConfig: a missing config file → {} (safe default, never crashes, block stays off)',
   JSON.stringify(loadGtConfig('/nonexistent/path/xyz')) === '{}');
+
+// proposedStale — manual-edit recompile gate (option 1): recompile PROPOSED when a rule doc is newer.
+ok('proposedStale: no proposed file yet → due (recompile)', proposedStale(null, [100, 200]) === true);
+ok('proposedStale: a rule doc newer than proposed → due', proposedStale(100, [50, 150]) === true);
+ok('proposedStale: all docs older than proposed → NOT due', proposedStale(200, [100, 150]) === false);
+ok('proposedStale: no rule docs at all → NOT due', proposedStale(200, []) === false);
+ok('proposedStale: an unreadable doc (null mtime) is ignored, not treated as newer', proposedStale(200, [null, 100]) === false);
 
 console.log(`\n${pass} checks passed.`);

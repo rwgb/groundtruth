@@ -999,6 +999,15 @@ function recompileRules(cwd) {
   return (out.match(/^PROPOSED (\d+)/m) || [])[1] || '?';
 }
 
+// A MANUAL (in-your-editor) edit to a rule doc doesn't fire the --watch-rules PostToolUse hook — that only
+// fires on the Edit/Write TOOLS — so the PROPOSED set would go stale until the next SessionStart. Pure
+// staleness test (mtimes injected): no proposed file yet, or any rule-source doc newer than it → a recompile
+// is due. PROPOSED only — this never arms anything. Tested.
+export function proposedStale(proposedMtime, srcMtimes = []) {
+  if (proposedMtime == null) return true;                          // never compiled → due
+  return srcMtimes.some(m => m != null && m > proposedMtime);
+}
+
 function main() {
   const git = (args, cwd) => {
     try { return execSync(`git ${args}`, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
@@ -1252,6 +1261,16 @@ function main() {
     const { introduced } = attributeDebt(baseline.debt, changedDebt);
     baselineInfo = { ref: baseRef, preExisting: (baseline.debt || []).length, introduced: introduced.length };
   }
+
+  // Manual edits to a rule doc bypass --watch-rules (a TOOL hook), so refresh the PROPOSED set here when a
+  // hand-edited CLAUDE.md/SKILL.md/… is newer than proposed-rules.json — reflected THIS turn (the card's
+  // pending-approvals nudge below picks it up), not only at the next SessionStart. PROPOSED only; nothing
+  // arms without /groundtruth-rules. Cheap (ls-files + stat), recompiles ONLY when stale, fail-open.
+  try {
+    const mtime = (p) => { try { return statSync(join(cwd, p)).mtimeMs; } catch { return null; } };
+    const srcs = git('ls-files', cwd).split('\n').filter(f => RULE_SRC_RE.test(f));
+    if (proposedStale(mtime('.claude/groundtruth/proposed-rules.json'), srcs.map(mtime))) recompileRules(cwd);
+  } catch { /* non-fatal — proposed set just stays as-is until SessionStart */ }
 
   // Block is opt-in, default warn. Either source enables it (no settings.json edit required):
   //   env GROUNDTRUTH_BLOCK=1  (back-compat)   OR   .claude/groundtruth/config.json {"block":true}
