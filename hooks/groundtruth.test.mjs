@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync as fsWrite, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit } from './groundtruth.mjs';
+import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
 
 let pass = 0;
@@ -245,8 +245,12 @@ ok('compiled forbid_in_added (B2): a same-turn inline exemption is SURFACED as a
   (() => { const r = cr('+++ b/src/a.js\n+// groundtruth-ok\n+console.log(x)', [{ id: 'no-log', kind: 'forbid_in_added', file_re: '\\.js$', line_re: 'console\\.log', unless_re: 'groundtruth-ok', message: 'x' }]); return r.length === 1 && r[0].sev === 'warn' && /suppress/i.test(r[0].msg); })());
 ok('compiled: human-promoted severity:block is honored',
   cr('+++ b/x.js\n+danger', [{ id: 'd', kind: 'forbid_in_added', file_re: '\\.js$', line_re: 'danger', severity: 'block', message: 'x' }]).some(f => f.sev === 'block'));
-ok('compiled: a malformed regex is skipped, never throws',
-  cr('+++ b/x.js\n+y', [{ id: 'bad', kind: 'forbid_in_added', file_re: '(', line_re: 'y', message: 'x' }]).length === 0);
+ok('compiled: a malformed regex is SURFACED as INERT (not silently skipped — armed-but-dead is false confidence)',
+  (() => { const r = cr('+++ b/x.js\n+y', [{ id: 'bad', kind: 'forbid_in_added', file_re: '\\.js$', line_re: '(', message: 'x' }]); return r.length === 1 && r[0].sev === 'warn' && /INERT/i.test(r[0].msg); })());
+ok('compiled: a `(?i)` PCRE inline flag is normalized so the rule FIRES (JS RegExp rejects inline groups — this used to die silently)',
+  cr('+++ b/migrations/repeatable/x.sql\n+CREATE TABLE t (id int)', [{ id: 'no-ct', kind: 'forbid_in_added', file_re: 'repeatable/.*\\.sql$', line_re: '(?i)\\bCREATE\\s+TABLE\\b', message: 'x' }]).some(f => f.rule === 'no-ct' && !/INERT/i.test(f.msg)));
+ok('compileRuleRe: strips a leading (?i) (stays case-insensitive) but still throws on a genuinely broken pattern',
+  (() => { const fires = compileRuleRe('(?i)\\bfoo\\b').test('FOO'); let threw = false; try { compileRuleRe('('); } catch { threw = true; } return fires && threw; })());
 ok('compiled: no rules → no findings', cr('+++ b/x.js\n+y', []).length === 0);
 // Surfacing: the prior turn's findings get injected into the next turn's context (closes the silent-warn gap).
 ok('priorFindingsContext: clean / non-warn input → no injection',

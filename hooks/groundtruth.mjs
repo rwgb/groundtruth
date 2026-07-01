@@ -389,6 +389,19 @@ export function pendingApprovals(cwd) {
   return (Array.isArray(proposed) ? proposed : []).filter(r => r.status === 'armable' && !have.has(r.id)).length;
 }
 
+// A rule regex may be hand-authored (seed-rules.json) or grounded via PCRE `git grep -P`, so it can carry
+// a PCRE/Python LEADING inline-flag group — `(?i)` (redundant here: we always apply `i`), `(?s)`, `(?m)`.
+// JS `RegExp` rejects inline groups, so such a pattern used to throw and the rule was SILENTLY skipped —
+// an armed rule doing nothing, the exact false-confidence Groundtruth exists to catch (and the grounder
+// used `-P`, which DOES accept `(?i)`, so it passed grounding as 'armable' yet never fired). Normalize a
+// leading flag group into real JS flags, then compile; throws only on a genuinely malformed pattern.
+export function compileRuleRe(pattern) {
+  let src = String(pattern), flags = 'i';
+  const m = src.match(/^\(\?([a-zA-Z]+)\)/);
+  if (m) { src = src.slice(m[0].length); if (m[1].includes('m')) flags += 'm'; if (m[1].includes('s')) flags += 's'; }
+  return new RegExp(src, flags);
+}
+
 export function runCompiledRules(diff, rules) {
   const out = [];
   if (!rules || !rules.length) return out;
@@ -402,8 +415,11 @@ export function runCompiledRules(diff, rules) {
   const files = Object.keys(byFile);
   for (const r of rules) {
     let fre, lre, ure;
-    try { fre = new RegExp(r.file_re, 'i'); lre = r.line_re && new RegExp(r.line_re, 'i'); ure = r.unless_re && new RegExp(r.unless_re, 'i'); }
-    catch { continue; }                            // a bad regex in a compiled rule is skipped, never crashes
+    // A regex that won't compile can enforce NOTHING — surface it LOUDLY as inert, never silently skip:
+    // an armed-but-dead rule is false confidence (matches the vacuous-unless_re guard below). Warn, not
+    // block — a broken rule shouldn't halt the turn, but it must be visible so it gets fixed.
+    try { fre = compileRuleRe(r.file_re); lre = r.line_re && compileRuleRe(r.line_re); ure = r.unless_re && compileRuleRe(r.unless_re); }
+    catch (e) { out.push({ cls: 'R', sev: 'warn', rule: r.id, msg: `rule ${r.id} is INERT — its regex does not compile (${String(e.message).slice(0, 60)}); fix its file_re/line_re or it enforces nothing` }); continue; }
     const sev = r.severity === 'block' ? 'block' : 'warn';   // auto-compiled = warn unless a human promoted it
     if (r.kind === 'forbid_path') {
       const hit = files.find(f => fre.test(f));
