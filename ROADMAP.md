@@ -42,6 +42,11 @@ Tracks `groundtruth-architecture.md` **v0.4**. What's built, and what's left to 
   (warn-only until a human promotes to block), `groundtruth.mjs` enforces every Stop.
 - **Pre-flight intent (§7)** — `UserPromptSubmit` warns on a thin prompt; the verdict marks a thin
   contract LOW-CONFIDENCE (completeness uncheckable).
+- **Remediation loop + anti-gaming (§13/§14)** — a block-severity catch hands back a corrective payload
+  (names the target state per class), then re-checks the fix on the next stop; capped at 2 attempts →
+  escalate to a human, never wedges. A retry that edits the tests / this checker / the ledger is flagged
+  as gaming — the block *holds* (never an escape hatch). Block-mode-gated. Pure decision + per-turn
+  `.attempts` state file; regression-tested.
 - WARN default / BLOCK opt-in (`GROUNDTRUTH_BLOCK=1`); verdict card → `.claude/groundtruth/<session>.md`.
 - Repo-agnostic rule auto-discovery + the **`groundtruth.rules` pointer** (`.claude/groundtruth.json` `rules`).
 - Plugin packaging; no-dep self-check (`hooks/groundtruth.test.mjs`, 228 checks).
@@ -54,14 +59,9 @@ The collapse vs the doc's plumbing: the Stop payload + transcript + `git diff HE
 
 ## Phase 2 — the rest of v0.2's v1 scope
 
-Cheapest-first. **Done (now in Built):** baseline diffing (§5) · pre-flight intent (§7). Remaining:
+Cheapest-first. **Done (now in Built):** baseline diffing (§5) · pre-flight intent (§7) · remediation
+loop + anti-gaming (§13/§14). Remaining:
 
-- **Remediation loop + anti-gaming (§13/§14)** — corrective payload by class (names target state);
-  retry cap (2) → escalate; re-check **stricter**; between-attempts watch (auto-fail if a fix touches
-  test files / ledgers / Groundtruth's own config; monotonic completion). *Cost: the per-attempt state
-  file (§10) + replacing the current single-shot block.* **Block-mode-gated** — only earns its keep
-  once block is on, which itself waits on precision (below). This is the one place v1's "no persisted
-  state" simplification partially reverses.
 - **Precision hardening → block-readiness (§12)** — *operational, not code.* Run WARN across real
   sessions, record per-class false-positive rate, tune. The gate before block ships by default. Needs
   a one-keystroke "this verdict was wrong" feedback signal (small, deferred).
