@@ -21,10 +21,11 @@ invoke this command.**
    If `$ARGUMENTS` names a path, focus there. Ask each subagent to return candidate rules **only** in this
    exact shape:
    ```json
-   { "id": "no-<slug>", "kind": "forbid_in_added", "file_re": "<regex>", "line_re": "<regex>", "message": "<the rule, one line>" }
+   { "id": "no-<slug>", "kind": "forbid_in_added", "file_re": "<regex>", "line_re": "<regex>", "message": "<the rule, one line>", "positive_example": "<a code line the rule SHOULD flag>" }
    ```
    - `file_re` — which files the rule applies to (`\\.sql$`, `\\.(ts|tsx)$`, …); a broad source set if unsure.
-   - `line_re` — the forbidden token/pattern; anchor identifiers with `\\b`.
+   - `line_re` — the forbidden token/pattern; anchor identifiers with `\\b`. **JS `RegExp` syntax only** — no PCRE/Python inline flags like `(?i)` (matching is already case-insensitive); a pattern that doesn't compile in JS is inert.
+   - `positive_example` — a minimal line the rule is meant to catch. It PROVES the rule can fire: the grounder rejects (routes to `review`, never `armable`) any candidate whose `line_re` doesn't match its own example. Grounding otherwise only proves a rule doesn't hit *existing* code — never that it fires at all.
 
 2. **Be conservative — this is the whole point.** Propose ONLY rules a regex can actually enforce: a
    forbidden token/string appearing in newly-added code. **Drop** anything needing judgment, semantics, or
@@ -32,12 +33,21 @@ invoke this command.**
    **Drop** anything the literal extractor already gets. When in doubt, DROP it: a missed rule costs nothing;
    a noisy or over-broad rule wastes the human's review and trains them to ignore the gate.
 
-3. **Write to the per-project seed file** (the plugin's existing rule input — grounded and gated identically
+3. **Compile + prove-fire each candidate BEFORE you hand it over — do not skip this.** For every rule, in
+   your own execution (a tiny `node -e`, not by eye):
+   - `new RegExp(line_re, 'i')` and `new RegExp(file_re, 'i')` must **compile** — a `SyntaxError` means the
+     rule is inert; fix it or drop it. (No `(?i)`/`(?s)` inline flags — JS rejects them.)
+   - `new RegExp(line_re, 'i').test(positive_example)` must be **true** — else `line_re` can never fire; fix it or drop it.
+   - Sanity: the example should look like real code the rule targets, not a contrived string built to pass.
+   Only candidates that pass both go into the seed file. The grounder re-checks this deterministically, but
+   catching it here keeps junk out of the human's review pile.
+
+4. **Write to the per-project seed file** (the plugin's existing rule input — grounded and gated identically
    to the deterministic rules): merge your candidates into `.claude/groundtruth/seed-rules.json` (a JSON
    array — create it if absent; **never overwrite** existing entries; dedupe by `id`).
 
-4. **Ground them deterministically.** Run the plugin's grounder so each candidate is checked against the
-   real tree:
+5. **Ground them deterministically.** Run the plugin's grounder so each candidate is checked against the
+   real tree (it re-runs the compile + positive_example checks and routes any failure to `review`):
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/hooks/compile-rules.mjs" .
    ```
@@ -47,7 +57,7 @@ invoke this command.**
    committed code → can only fire on new code, safe) or **`review`** (already matches code → over-broad, or
    a real existing hit worth a human's eye).
 
-5. **Hand off to the gate.** Tell the user, concisely: how many rules you proposed, how many grounded
+6. **Hand off to the gate.** Tell the user, concisely: how many rules you proposed, how many grounded
    **clean** vs **need-review**, and that **nothing is enforced**. To review and arm them, they run
    **`/groundtruth-rules`** — spell that command out verbatim.
 

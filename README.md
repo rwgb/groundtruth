@@ -277,7 +277,7 @@ non-adversarial use only.
 ## Tests
 
 ```bash
-node hooks/groundtruth.test.mjs   # 234 assert-based unit checks, no deps
+node hooks/groundtruth.test.mjs   # 237 assert-based unit checks, no deps
 node hooks/redteam.mjs            # LIVE adversarial harness (9 scenarios, 12 checks) — sandboxed, exits non-zero if a rail fell
 ```
 

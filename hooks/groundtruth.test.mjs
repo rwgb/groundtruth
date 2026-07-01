@@ -6,7 +6,7 @@
  * Class-7 judgment is the semantic/roadmap call, not a deterministic one). assert-based, no deps.
  */
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync as fsWrite, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -650,6 +650,33 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     const mapRule = compile(repo).find(c => /\\bmap\\b/.test(c.line_re));
     ok('grounding (REAL git grep -P): a forbidden token present in code grounds as "review", not "armable"',
       !!mapRule && mapRule.status === 'review' && mapRule.hits >= 1);
+  } finally { try { rmSync(repo, { recursive: true, force: true }); } catch {} }
+}
+
+// ── compile() validation gates: a seed rule must (1) compile at runtime and (2) match its positive_example
+//    before it can be 'armable' — else it routes to 'review' with a reason. Closes the "armed but never
+//    fires" hole (LLM/hand-authored regex that compiles under PCRE grounding but is inert or wrong in JS). ──
+{
+  let repo;
+  try { repo = mkdtempSync(pathJoin(tmpdir(), 'gt-validate-')); }
+  catch { repo = mkdtempSync(pathJoin(process.cwd(), '.gt-validate-')); }
+  try {
+    const git = (args) => execFileSync('git', args, { cwd: repo, stdio: ['ignore', 'pipe', 'ignore'] });
+    git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+    fsMkdir(pathJoin(repo, '.claude', 'groundtruth'), { recursive: true });
+    fsWrite(pathJoin(repo, '.claude', 'groundtruth', 'seed-rules.json'), JSON.stringify([
+      { id: 'seed-ci', kind: 'forbid_in_added', file_re: '\\.sql$', line_re: '(?i)\\bCREATE\\s+TABLE\\b', message: 'x', positive_example: 'CREATE TABLE t (id int)' },
+      { id: 'seed-broken', kind: 'forbid_in_added', file_re: '\\.js$', line_re: '(', message: 'x', positive_example: 'y' },
+      { id: 'seed-nomatch', kind: 'forbid_in_added', file_re: '\\.js$', line_re: '\\bfoo\\b', message: 'x', positive_example: 'bar' },
+    ]));
+    const P = compile(repo);
+    const g = (id) => P.find(c => c.id === id);
+    ok('compile: a `(?i)` seed rule is normalized and grounds "armable" (PCRE-only pattern no longer dies)',
+      g('seed-ci') && g('seed-ci').status === 'armable');
+    ok('compile: a seed rule whose regex will not compile → "review" with a reason (never auto-armable)',
+      g('seed-broken') && g('seed-broken').status === 'review' && /does not compile/i.test(g('seed-broken').reason || ''));
+    ok('compile: a seed rule whose line_re does not match its positive_example → "review" (proven-not-to-fire)',
+      g('seed-nomatch') && g('seed-nomatch').status === 'review' && /positive_example/i.test(g('seed-nomatch').reason || ''));
   } finally { try { rmSync(repo, { recursive: true, force: true }); } catch {} }
 }
 

@@ -25,6 +25,7 @@
 import { execFileSync } from 'node:child_process';   // execFile (no shell) — the doc pattern has backticks
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { compileRuleRe } from './groundtruth.mjs';   // SAME regex normalizer the runtime uses (grounder⇄runtime parity)
 
 // Every declared rule source (matches groundtruth.mjs RULE_SRC_RE — the --watch-rules trigger).
 const RULE_PATHSPECS = [
@@ -104,7 +105,7 @@ export function extractCandidates(root, grep = gitGrep, ls = gitLsFiles) {
     seen.add(key);
     cands.push({ id: 'no-' + wrong.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
       source: `extracted from ${file}:${lineno}`, kind: 'forbid_in_added',
-      file_re, line_re, severity: 'warn',
+      file_re, line_re, severity: 'warn', positive_example: wrong,   // the forbidden token — line_re must match it (fire-proof)
       message: correct ? `use \`${correct}\`, not \`${wrong}\`` : `avoid \`${wrong}\` (forbidden by ${file})` });
   };
   const rows = (raw) => raw.split('\n').filter(Boolean)
@@ -163,8 +164,21 @@ export function compile(ROOT, { code = codeHits, grep } = {}) {
     if (seen.has(key)) continue;
     seen.add(key); merged.push(c);
   }
-  // Ground each: 0 code hits → 'armable' (safe), already-in-code → 'review' (real bug or over-broad).
+  // Validate + ground each. Two deterministic gates run BEFORE grounding — both routed to 'review' (never
+  // auto-armed), so a broken or non-firing candidate can't slip through `approve-all`:
+  //  (1) RUNTIME-PARITY: the regex must compile in JS via compileRuleRe — the exact normalizer the runtime
+  //      uses. The grounder greps with PCRE (`git grep -P`), which accepts patterns JS rejects, so without
+  //      this a PCRE-valid rule (e.g. a hand/LLM-authored one) could ground 'armable' yet be inert at runtime.
+  //  (2) FIRE-PROOF: if the candidate ships a positive_example, line_re MUST match it. Grounding only proves
+  //      the rule doesn't hit EXISTING code (over-broad); it never proves the rule CAN fire. The example does.
+  // Then ground: 0 code hits → 'armable' (safe), already-in-code → 'review' (real bug or over-broad).
   return merged.map(c => {
+    let jsErr = null;
+    try { compileRuleRe(c.file_re); if (c.line_re) compileRuleRe(c.line_re); if (c.unless_re) compileRuleRe(c.unless_re); }
+    catch (e) { jsErr = e.message; }
+    if (jsErr) return { ...c, status: 'review', reason: `regex does not compile at runtime (JS): ${jsErr}` };
+    if (c.positive_example != null && c.line_re && !compileRuleRe(c.line_re).test(String(c.positive_example)))
+      return { ...c, status: 'review', reason: 'line_re does not match its positive_example — the rule may never fire' };
     const hits = code(ROOT, c.line_re, c.file_re);
     return hits.length === 0
       ? { ...c, status: 'armable' }
@@ -188,8 +202,10 @@ function main() {
   console.log(`PROPOSED ${proposed.length} rules from your docs → .claude/groundtruth/proposed-rules.json (run /groundtruth-rules to review + approve — nothing is enforced until you do)`);
   console.log(`\n  ${armable.length} clean (0 existing code hits → safe to approve):`);
   armable.forEach(r => console.log(`  ✓ ${r.id} — ${r.message}  [${r.source}]`));
-  console.log(`\n  ${review.length} need review (already match committed code → real bug or over-broad):`);
-  review.forEach(r => console.log(`  ⚠ ${r.id} (${r.hits} code hits) — e.g. ` + r.sample));
+  console.log(`\n  ${review.length} need review (matches committed code, won't compile, or fails its example):`);
+  review.forEach(r => console.log(r.reason
+    ? `  ⚠ ${r.id} — ${r.reason}`
+    : `  ⚠ ${r.id} (${r.hits} code hits) — e.g. ` + r.sample));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main();
