@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1560" font-family="'Helvetica Neue', Arial, sans-serif">
+  <!-- ============ GROUNDTRUTH · "the nerd" identity hero ============ -->
+  <!-- Editable: colours, text, and the verdict-card lines are all plain SVG. -->
+  <defs>
+    <linearGradient id="ar" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3BE38A"/>
+      <stop offset="1" stop-color="#12B3C8"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#1c1c1a" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1560" fill="#FBF8F2"/>
+  <rect width="1200" height="1560" fill="none" stroke="#1C1C1A" stroke-width="10"/>
+
+  <!--  header: wordmark + creed  -->
+  <text x="600" y="128" text-anchor="middle" font-size="76" font-weight="800"
+        letter-spacing="6" fill="#1C1C1A">GROUNDTRUTH</text>
+  <text x="600" y="176" text-anchor="middle" font-size="27" font-style="italic"
+        font-family="Georgia, 'Times New Roman', serif" fill="#4A4A46">
+    Your &#8220;done&#8221; is a claim. The diff is the evidence.</text>
+  <line x1="360" y1="208" x2="840" y2="208" stroke="#1C1C1A" stroke-width="2"/>
+
+  <!--  the agent: sleek AR glasses flashing a false "done"  -->
+  <g transform="translate(210,300)">
+    <!-- speech tag -->
+    <g filter="url(#soft)">
+      <rect x="-40" y="-58" width="286" height="70" rx="16" fill="#ffffff" stroke="#1C1C1A" stroke-width="2"/>
+    </g>
+    <text x="103" y="-14" text-anchor="middle" font-size="21" fill="#1C1C1A">
+      &#8220;done &#8212; tests pass &#10003;&#8221;</text>
+    <!-- sleek AR visor -->
+    <g transform="translate(60,40)">
+      <rect x="-58" y="-16" width="200" height="34" rx="17" fill="url(#ar)" stroke="#0E8F79" stroke-width="2"/>
+      <circle cx="8" cy="1" r="7" fill="#0B2E2A"/>
+      <circle cx="76" cy="1" r="7" fill="#0B2E2A"/>
+      <circle cx="132" cy="-6" r="3.5" fill="#EAFBF2"/> <!-- camera dot -->
+    </g>
+    <text x="60" y="112" text-anchor="middle" font-size="18" fill="#7A867F" font-style="italic">the agent &#183; AI glasses</text>
+  </g>
+
+  <!--  the nerd (mascot)  -->
+  <g transform="translate(600,560)">
+    <!-- shirt / shoulders -->
+    <path d="M-190 300 q30 -150 190 -150 q160 0 190 150 z" fill="#556070" stroke="#1C1C1A" stroke-width="4"/>
+    <!-- plaid hint -->
+    <line x1="-120" y1="180" x2="-95" y2="300" stroke="#43506080" stroke-width="10"/>
+    <line x1="-40" y1="158" x2="-40" y2="300" stroke="#43506080" stroke-width="10"/>
+    <line x1="40" y1="158" x2="40" y2="300" stroke="#43506080" stroke-width="10"/>
+    <line x1="120" y1="180" x2="95" y2="300" stroke="#43506080" stroke-width="10"/>
+    <!-- collar -->
+    <path d="M-34 150 L0 196 L34 150" fill="#FBF8F2" stroke="#1C1C1A" stroke-width="4"/>
+
+    <!-- neck -->
+    <rect x="-34" y="108" width="68" height="70" rx="14" fill="#EAB98E" stroke="#1C1C1A" stroke-width="4"/>
+
+    <!-- reading-glasses cord (the magnetic kind) -->
+    <path d="M-118 40 C-150 150 -60 190 0 190 C60 190 150 150 118 40"
+          fill="none" stroke="#1C1C1A" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- ears -->
+    <ellipse cx="-118" cy="-14" rx="18" ry="26" fill="#EAB98E" stroke="#1C1C1A" stroke-width="4"/>
+    <ellipse cx="118" cy="-14" rx="18" ry="26" fill="#EAB98E" stroke="#1C1C1A" stroke-width="4"/>
+
+    <!-- head -->
+    <rect x="-112" y="-150" width="224" height="270" rx="70" fill="#F1CBA3" stroke="#1C1C1A" stroke-width="4"/>
+
+    <!-- greying senior-dev hair: receding, tufts on the sides -->
+    <path d="M-112 -70 C-118 -150 -60 -172 0 -168 C60 -172 118 -150 112 -70
+             C104 -120 60 -132 40 -120 C10 -150 -10 -150 -40 -120 C-60 -132 -104 -120 -112 -70 Z"
+          fill="#A6ACB3" stroke="#1C1C1A" stroke-width="4"/>
+
+    <!-- eyes, set HIGH — he is looking OVER the readers at your diff -->
+    <circle cx="-46" cy="-42" r="9" fill="#1C1C1A"/>
+    <circle cx="46" cy="-42" r="9" fill="#1C1C1A"/>
+    <!-- one skeptical eyebrow -->
+    <path d="M-70 -66 q24 -14 48 -4" fill="none" stroke="#1C1C1A" stroke-width="5" stroke-linecap="round"/>
+    <path d="M22 -62 q24 -8 48 0" fill="none" stroke="#1C1C1A" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- nose -->
+    <path d="M0 -30 L-12 6 L6 6" fill="none" stroke="#C98F5E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- THE reading glasses: thick black rectangles, low on the nose -->
+    <g stroke="#111111" stroke-width="9" fill="rgba(255,255,255,0.14)">
+      <rect x="-96" y="6" width="82" height="52" rx="12"/>
+      <rect x="14" y="6" width="82" height="52" rx="12"/>
+    </g>
+    <line x1="-14" y1="24" x2="14" y2="24" stroke="#111111" stroke-width="9"/>
+    <line x1="-96" y1="18" x2="-118" y2="10" stroke="#111111" stroke-width="7" stroke-linecap="round"/>
+    <line x1="96" y1="18" x2="118" y2="10" stroke="#111111" stroke-width="7" stroke-linecap="round"/>
+
+    <!-- flat, unbothered mouth with the faintest smirk -->
+    <path d="M-30 82 q30 16 60 -2" fill="none" stroke="#1C1C1A" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- caption -->
+    <text x="0" y="360" text-anchor="middle" font-size="19" fill="#7A867F" font-style="italic">the nerd &#183; &#163;1.99 readers &#183; reads the diff</text>
+  </g>
+
+  <!-- he points at the card -->
+  <text x="905" y="560" font-size="20" fill="#4A4A46" font-style="italic">so he opens the file&#8230;</text>
+  <path d="M900 575 q-40 30 -70 60" fill="none" stroke="#1C1C1A" stroke-width="3"/>
+
+  <!--  the verdict card (code-accurate, current format)  -->
+  <g transform="translate(150,970)" filter="url(#soft)">
+    <rect x="0" y="0" width="900" height="470" rx="20" fill="#FFFFFF" stroke="#1C1C1A" stroke-width="3"/>
+    <rect x="0" y="0" width="900" height="52" rx="20" fill="#1C1C1A"/>
+    <rect x="0" y="30" width="900" height="22" fill="#1C1C1A"/>
+    <text x="26" y="34" font-size="20" font-weight="700" fill="#FBF8F2" letter-spacing="2">GROUNDTRUTH</text>
+    <text x="874" y="34" text-anchor="end" font-size="16" fill="#9AA0A6">Stop &#183; reads git diff</text>
+
+    <g font-family="'SF Mono','Menlo','Consolas',monospace" font-size="16">
+      <text x="26" y="82" fill="#4A4A46">ASK  add retry w/ backoff to the S3 client in src/upload.js</text>
+      <text x="26" y="108" fill="#9AA0A6" font-size="13">WHAT WAS CHECKED</text>
+
+      <!-- Honesty (red) + the two nested findings -->
+      <circle cx="34" cy="134" r="7" fill="#D64545"/>
+      <text x="52" y="140" font-weight="700" fill="#1C1C1A">Honesty &#8212; claims don't match what it did:</text>
+      <circle cx="70" cy="162" r="5" fill="#D64545"/>
+      <text x="84" y="168" fill="#4A4A46">false test/build claim &#8212; "tests pass", but no test ran this session</text>
+      <circle cx="70" cy="188" r="5" fill="#E8A020"/>
+      <text x="84" y="194" fill="#4A4A46">stub/placeholder in added code: // TODO: wire up backoff</text>
+
+      <!-- Rules: a real secret catch (block) -->
+      <circle cx="34" cy="222" r="7" fill="#D64545"/>
+      <text x="52" y="228" font-weight="700" fill="#1C1C1A">Rules &#8212; a security rule was broken in the diff:</text>
+      <circle cx="70" cy="250" r="5" fill="#D64545"/>
+      <text x="84" y="256" fill="#4A4A46">hardcoded secret &#8212; AWS access key in added code</text>
+
+      <!-- Completeness green -->
+      <circle cx="34" cy="286" r="7" fill="#2FB56A"/>
+      <text x="52" y="292" fill="#4A4A46">Completeness &#8212; the ask mapped to real subtasks</text>
+
+      <!-- Tasks: the NEW tiered ledger — 1 pending, surfaced once (nag-once) -->
+      <circle cx="34" cy="316" r="7" fill="#E8A020"/>
+      <text x="52" y="322" fill="#4A4A46">Tasks &#8212; 1 pending (surfaced once; closes only when it lands in code)</text>
+
+      <line x1="26" y1="348" x2="874" y2="348" stroke="#E7E4DE" stroke-width="2"/>
+      <circle cx="34" cy="380" r="7" fill="#D64545"/>
+      <text x="52" y="386" font-weight="700" fill="#D64545">VERDICT  ISSUES &#8212; blocked</text>
+      <text x="360" y="386" font-size="14" fill="#6B7280">(GROUNDTRUTH_BLOCK=1 to halt)</text>
+      <text x="26" y="414" font-size="13" fill="#9AA0A6">&#9711; Aside: 1 observation set aside (not a request &#8212; never blocks, never nags).</text>
+      <text x="26" y="436" font-size="13" fill="#9AA0A6">&#9711; Deterministic verdict (no LLM, no network). Semantic checks are roadmap.</text>
+    </g>
+  </g>
+
+  <!--  catchphrase  -->
+  <g transform="translate(600,1500)">
+    <g filter="url(#soft)">
+      <rect x="-235" y="-40" width="470" height="66" rx="33" fill="#1C1C1A"/>
+    </g>
+    <path d="M-70 24 l-10 34 l44 -22 z" fill="#1C1C1A"/>
+    <text x="0" y="3" text-anchor="middle" font-size="30" font-weight="700" fill="#FBF8F2">
+      &#8220;&#8230;what the nerd&#8221;</text>
+  </g>
+</svg>

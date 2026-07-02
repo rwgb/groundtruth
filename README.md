@@ -115,6 +115,9 @@ reads the claim from the Stop payload, intent + Bash evidence from the transcrip
   doesn't exist) · 9 special-casing (non-test code that branches on test/CI/the auditor).
 - **Completeness** (scope-miss) — a named deliverable in the ask that never lands in the diff (the
   open-loop / task ledger; name-matching, deliberately crude — it abstains when the ask names nothing).
+  It also abstains when the turn is an **observation or question rather than a request** ("I can see a 304,
+  it's fine, no fix needed") — a deterministic non-request gate, so a conversational aside is never minted
+  into a phantom open loop. Still no LLM: the framing test is regex, and it errs toward not-tracking.
 - **Rules** (directive-override — *the differentiator*) — your project's standing rules, **compiled from
   your own docs into deterministic predicates** and enforced. No LLM: the doc literally says
   ``use `X` not `Y` `` or ``never `Z` ``, so a violation is a regex match, not a judgment call.

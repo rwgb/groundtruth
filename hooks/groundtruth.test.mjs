@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } f
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale } from './groundtruth.mjs';
+import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
 
 let pass = 0;
@@ -561,14 +561,17 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
   const snap = (files, extra = {}) => ({ files, sig: null, sigValid: null, targets: T, ...extra });
   ok('snapshot: unchanged referee files → no tamper',
     compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'aaaa' }).length === 0);
-  ok('snapshot: a hash that changed OUT-OF-BAND (Bash flip, no command) → tamper',
-    compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }).some(f => f.cls === 'tamper' && /OUT-OF-BAND/.test(f.msg)));
-  ok('snapshot: the same change RATIFIED by /groundtruth-block is legitimate (not flagged)',
+  // Phase 4: in the UNSIGNED regime the hash-compare can't be authoritative (best-effort), so an out-of-band
+  // change is a quiet integrity_note (awareness only), NOT a per-turn finding — the empirical noise fix.
+  ok('snapshot (unsigned): a hash that changed OUT-OF-BAND → quiet integrity_note (info), not a finding',
+    compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }).every(f => f.cls === 'integrity_note' && f.sev === 'info'));
+  ok('snapshot: the same change RATIFIED by /groundtruth-block is legitimate (not flagged at all)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }, new Set(['groundtruth-block'])).length === 0);
-  ok('snapshot: a referee file that VANISHED since session start → tamper',
-    compareSnapshot(snap({ [CFG]: 'aaaa' }), {}).some(f => f.cls === 'tamper'));
-  ok('snapshot: severity anchors to env (block when env set)',
-    compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }, new Set(), true)[0].sev === 'block');
+  ok('snapshot (unsigned): a referee file that VANISHED → quiet integrity_note (info)',
+    compareSnapshot(snap({ [CFG]: 'aaaa' }), {}).every(f => f.cls === 'integrity_note' && f.sev === 'info'));
+  // In the TRUSTWORTHY regime (key + valid sig) the out-of-band change IS a loud finding, env-anchored.
+  ok('snapshot (trustworthy): out-of-band change is a tamper finding, severity anchored to env (block when env set)',
+    compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: 'x', sigValid: true, keyed: true }), { [CFG]: 'bbbb' }, new Set(), /*envBlock*/ true, /*keyConfigured*/ true)[0].sev === 'block');
   ok('snapshot: a SIGNED snapshot whose signature no longer verifies → tamper (the snapshot itself was forged)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: 'deadbeef', sigValid: false }), { [CFG]: 'aaaa' }).some(f => /signature INVALID/i.test(f.msg)));
   ok('snapshot: no snapshot (SessionStart did not run) → nothing to compare, no crash',
@@ -780,5 +783,193 @@ ok('proposedStale: a rule doc newer than proposed → due', proposedStale(100, [
 ok('proposedStale: all docs older than proposed → NOT due', proposedStale(200, [100, 150]) === false);
 ok('proposedStale: no rule docs at all → NOT due', proposedStale(200, []) === false);
 ok('proposedStale: an unreadable doc (null mtime) is ignored, not treated as newer', proposedStale(200, [null, 100]) === false);
+
+// ── request/non-request gate — the "conversational aside → open loop" FP fix (deterministic, no LLM) ──
+ok('isTrackableRequest: an observation ("I can see a 304, it\'s fine") is NOT a request',
+  isTrackableRequest("I can see a 304 in `handleUpload`, it's fine") === false);
+ok('isTrackableRequest: dismissal with a NEGATED verb ("no fix needed") is NOT a request (the "no fix" trap)',
+  isTrackableRequest("the 304 in `handleUpload` is fine, no fix needed") === false);
+ok('isTrackableRequest: a compound aside that ALSO commands a real fix IS a request (verb survives strip)',
+  isTrackableRequest("the 304 is fine but fix the 500 in retry.js") === true);
+ok('isTrackableRequest: a plain interrogative naming a file ("is report.js right?") is NOT a request',
+  isTrackableRequest('is report.js right?') === false);
+ok('isTrackableRequest: a plain imperative IS a request',
+  isTrackableRequest('add retry with backoff to src/upload.js') === true);
+ok('isTrackableRequest: "ignore the cache.js warning for now" is NOT a request',
+  isTrackableRequest('ignore the cache.js warning for now') === false);
+
+// end-to-end: an observation is a nag-free SOFT aside (demote-don't-drop), a real request is a HARD task.
+ok('openLoops (HARD only): an observation naming a backtick token mints NO open loop',
+  openLoops(["I can see a 304 in `handleUpload`, it's fine, no fix needed"], '').length === 0);
+ok('openLoops (HARD only): a real ask naming an absent deliverable STILL opens a loop',
+  openLoops(['add a csv export to report.js'], '').length === 1);
+ok('ledger tier: an observation naming a token creates a SOFT task (demote-don\'t-drop, never blocks)',
+  (() => { const t = updateTaskLedger([], ["the 304 in `handleUpload` is fine, no fix needed"], ''); return t.length === 1 && t[0].tier === 'soft'; })());
+ok('ledger tier: a real imperative request creates a HARD task',
+  (() => { const t = updateTaskLedger([], ['fix the retry in retry.js'], ''); return t.length === 1 && t[0].tier === 'hard'; })());
+
+// ── Phase 1: example-secret allowlist + synthetic-marker demotion (kills the block-severity FP) ──
+ok('isSecret: the AWS docs example key is recognized but BENIGN (allowlisted → demote)',
+  isSecret('const k = "AKIAIOSFODNN7EXAMPLE";').benign === true);
+ok('isSecret: a real-shaped AWS key (no marker) is NOT benign → still blocks',
+  isSecret('const k = "AKIA4KNZ7QW2RJ9DP3VH";').benign === false);
+// C1 regression: a REAL-format key is NOT demoted by attacker-choosable line context (a `FAKE_` var name,
+// a `// example` comment). Only the KEY TOKEN itself (allowlisted or marker-inside) demotes.
+ok('isSecret: a real-shaped key on a FAKE_-marked var name STILL blocks (line context is attacker-choosable)',
+  isSecret('const FAKE_KEY = "AKIA4KNZ7QW2RJ9DP3VH";').benign === false);
+ok('isSecret: a real-shaped key with an "// example" comment STILL blocks (C1 bypass closed)',
+  isSecret('const awsKey = "AKIA4KNZ7QW2RJ9DP3VH"; // see example in docs').benign === false);
+ok('isSecret: a key whose OWN token self-marks (…EXAMPLE) is benign',
+  isSecret('const k = "AKIAIOSFODNN7EXAMPLE";').benign === true);
+ok('analyze: an example key added → WARN, not block (no false halt)',
+  analyze({ claim: '', diff: '+++ b/config.js\n+const k = "AKIAIOSFODNN7EXAMPLE";' }).some(f => f.cls === 'C1' && f.sev === 'warn'));
+ok('analyze: a real-shaped key added → BLOCK (real leak still halts)',
+  analyze({ claim: '', diff: '+++ b/config.js\n+const k = "AKIA4KNZ7QW2RJ9DP3VH";' }).some(f => f.cls === 'C1' && f.sev === 'block'));
+
+// ── Phase 2: position-aware stub markers (comment/prose only — string/regex/JSON/fence = mention) ──
+ok('C2 self-match FIX: a TODO inside a regex literal is NOT a stub',
+  !has(analyze({ claim: '', diff: '+++ b/x.js\n+const RE = /\\b(TODO|FIXME|XXX|HACK)\\b/i;' }), 2));
+ok('C2 FIX: a TODO inside a string literal is NOT a stub',
+  !has(analyze({ claim: '', diff: '+++ b/x.js\n+const msg = "handle TODO items later";' }), 2));
+ok('C2 FIX: a TODO inside a JSON string value is NOT a stub',
+  !has(analyze({ claim: '', diff: '+++ b/data.json\n+  "note": "flagged a TODO by mistake"' }), 2));
+ok('C2 still fires: a real // TODO comment',
+  has(analyze({ claim: '', diff: '+++ b/x.js\n+  // TODO: wire up backoff' }), 2));
+ok('C2 still fires: a TODO inside a /* block comment */',
+  has(analyze({ claim: '', diff: '+++ b/x.js\n+  /* TODO: fix */' }), 2));
+ok('C2 FIX (md): a // TODO inside a fenced code block is NOT a stub (quotation)',
+  !has(analyze({ claim: '', diff: '+++ b/README.md\n+```\n+  // TODO: demo card\n+```' }), 2));
+ok('C2 (md): a TODO in markdown PROSE still counts',
+  has(analyze({ claim: '', diff: '+++ b/README.md\n+TODO: document the API' }), 2));
+ok('audit scanContent: TODO in a regex literal is silent (position-aware)',
+  !scanContent('x.js', 'const RE = /\\b(TODO)\\b/;\n').some(f => f.cls === 2));
+ok('audit scanContent: a real // TODO comment still fires',
+  scanContent('x.js', '// TODO: real\n').some(f => f.cls === 2));
+ok('C2 FIX: an enumeration of markers in a comment (TODO/FIXME) is documentation, not a stub',
+  !has(analyze({ claim: '', diff: '+++ b/x.js\n+// forbidden markers: (TODO/FIXME)' }), 2));
+ok('C2 still fires: a real marker with a colon in a doc-comment continuation',
+  scanContent('x.js', '/* handler\n * TODO: implement retry\n */\n').some(f => f.cls === 2));
+
+// ── Phase 2b: member-access-safe boundary for CALL-forbidding rules (the $eval FP) ──
+ok('call-rule: `\\beval\\s*\\(` does NOT match a method call page.$eval(',
+  !compileRuleRe('\\beval\\s*\\(').test("await page.$eval('#x')"));
+ok('call-rule: `\\beval\\s*\\(` does NOT match x.eval(',
+  !compileRuleRe('\\beval\\s*\\(').test('obj.eval(src)'));
+ok('call-rule: `\\beval\\s*\\(` STILL matches the global eval(',
+  compileRuleRe('\\beval\\s*\\(').test('const r = eval(userExpr);'));
+ok('identifier-rule `\\bsignup_date\\b` UNTOUCHED — still matches member access row.signup_date',
+  compileRuleRe('\\bsignup_date\\b').test('const d = row.signup_date;'));
+const _evalRule = [{ id: 'no-eval', kind: 'forbid_in_added', file_re: '\\.(js|mjs)$', line_re: '\\beval\\s*\\(', message: 'never use eval()' }];
+ok('runCompiledRules: page.$eval in added code is NOT flagged (Playwright API, not global eval)',
+  !runCompiledRules('+++ b/ui-smoke.mjs\n+  const t = await page.$eval("#x", e => e.textContent);', _evalRule).length);
+ok('runCompiledRules: a real eval( in added code IS flagged',
+  runCompiledRules('+++ b/a.js\n+  const r = eval(userInput);', _evalRule).some(f => f.cls === 'R'));
+
+// ── Phase 3: self-state / scratchpad exclusion, rule provenance, rule comment-position ──
+ok('excludedScanPath: absolute / parent-escape / scratchpad / self-state are excluded',
+  excludedScanPath('/Users/x/repo/a.js') && excludedScanPath('../up.js') &&
+  excludedScanPath('foo/scratchpad/b.js') && excludedScanPath('.claude/groundtruth/x.json'));
+ok('excludedScanPath: a normal repo path is NOT excluded', !excludedScanPath('src/app.js') && !excludedScanPath('hooks/groundtruth.mjs'));
+ok('dropExcludedFiles: an excluded file block is stripped, a normal one kept', (() => {
+  const d = '+++ b/.claude/groundtruth/tasks.json\n+{"x":1}\n+++ b/src/app.js\n+const y = 2;';
+  const r = dropExcludedFiles(d);
+  return !r.includes('tasks.json') && r.includes('src/app.js');
+})());
+{
+  const evalRule = [{ id: 'no-eval', kind: 'forbid_in_added', file_re: '\\.js$', line_re: '\\beval\\s*\\(', message: 'never use eval()' }];
+  ok('rule comment-skip: a call-rule does NOT fire on eval() mentioned in a // comment',
+    !runCompiledRules('+++ b/x.js\n+  // never call eval() here', evalRule).length);
+  ok('rule comment-skip: the same call-rule DOES fire on a real eval() in code',
+    runCompiledRules('+++ b/x.js\n+  const r = eval(src);', evalRule).some(f => f.cls === 'R'));
+  const provRule = [{ id: 'no-foo', source: 'extracted from ARCHITECTURE.md:5', kind: 'forbid_in_added', file_re: '\\.md$', line_re: '\\bfoobar\\b', message: 'avoid foobar' }];
+  ok('rule provenance: a rule extracted from ARCHITECTURE.md does NOT fire on ARCHITECTURE.md itself',
+    !runCompiledRules('+++ b/ARCHITECTURE.md\n+never write foobar in code', provRule).length);
+  ok('rule provenance: the same rule STILL fires on a different file',
+    runCompiledRules('+++ b/other.md\n+here is foobar', provRule).some(f => f.cls === 'R'));
+}
+// ── Phase 5c: phantom-import parse (an import-shaped substring inside a string is not a real import) ──
+ok('phantom parse: an import inside a string literal (test fixture) is NOT flagged',
+  !has(analyze({ claim: '', diff: '+++ b/x.js\n+const d = \'+import y from "./nope-xyz"\';' }), 4));
+ok('phantom parse: a real unresolved import IS still flagged',
+  has(analyze({ claim: '', diff: '+++ b/x.js\n+import y from "./nope-xyz-123";' }), 4));
+
+// ── Phase 4: tamper re-plumb — unsigned out-of-band = quiet note, not a per-turn finding ──
+{
+  const snap = { files: { x: 'hashA' }, targets: [{ rel: 'x', ratifiedBy: null }], sig: null, sigValid: null, keyed: false };
+  const unsigned = compareSnapshot(snap, { x: 'hashB' }, new Set(), false, false);
+  ok('tamper (unsigned regime): an out-of-band change is a quiet integrity_note, NOT a tamper finding',
+    unsigned.length === 1 && unsigned[0].cls === 'integrity_note' && unsigned[0].sev === 'info');
+  const signed = { files: { x: 'hashA' }, targets: [{ rel: 'x', ratifiedBy: null }], sig: 'sig', sigValid: true, keyed: true };
+  const trusted = compareSnapshot(signed, { x: 'hashB' }, new Set(), false, true);
+  ok('tamper (trustworthy regime, key + valid sig): an out-of-band change IS a loud tamper finding',
+    trusted.some(f => f.cls === 'tamper' && (f.sev === 'warn' || f.sev === 'block')));
+  const card = renderCard([{ cls: 'integrity_note', sev: 'info', msg: 'compiled-rules.json differs' }], { intent: 'add a button to report.js' });
+  ok('renderCard: an integrity_note does NOT flip the verdict (stays Told & Done 🟢)',
+    card.includes('Told & Done') && !card.includes("rewrote Groundtruth's OWN state"));
+  ok('renderCard: the integrity_note still shows as an awareness footer',
+    card.includes('Integrity note (awareness only'));
+}
+
+// ── Phase 6: open-loop suite — tiers, clause-binding, novelty/paste-provenance, comment-vector, nag-once ──
+{
+  const c = classifyDeliverables('the 304 in `handleUpload` is fine, but fix retry.js');
+  ok('clause-binding: "…handleUpload is fine, but fix retry.js" → retry.js HARD, handleUpload SOFT (not both)',
+    c.hard.includes('retry.js') && c.soft.includes('handleUpload') && !c.hard.includes('handleUpload'));
+}
+// C2 regression: token-novelty via AGENT text was REMOVED (agent-influenceable). The agent naming the
+// deliverable in its OWN reply must NOT demote its own ask — classifyDeliverables ignores agent text entirely.
+ok('C2: an agent naming the deliverable in its reply canNOT demote the ask (no agent-text novelty)',
+  classifyDeliverables('add a csv export to report.js').hard.includes('report.js'));
+ok('a user-novel token in a real request is HARD',
+  classifyDeliverables('add a guard to app.js').hard.includes('app.js'));
+// M2 regression: paste-provenance computed on the FULL ask (fence survives clause-splitting).
+ok('paste-provenance (fence): a token only inside a ``` fence is a reference (SOFT), not a HARD open loop',
+  (() => { const c = classifyDeliverables('why does this crash?\n```\nconst x = doTheThing(payload)\n```'); return c.soft.includes('doTheThing') && !c.hard.includes('doTheThing'); })());
+ok('paste-provenance (stack-trace): a filename only in a `file.js:line` ref is SOFT, a requested symbol stays HARD',
+  (() => { const c = classifyDeliverables('the error at stackFrame.js:42 — add a guardClause'); return c.soft.includes('stackFrame.js') && c.hard.includes('guardClause'); })());
+// M1 regression: polite/omitted imperatives are real requests (HARD), not demoted questions.
+ok('M1: "could you move gameState into state.js?" is a HARD request (not a demoted question)',
+  classifyDeliverables('could you move gameState into state.js?').hard.includes('state.js'));
+ok('M1: "can you drop the retry logic from queue.js?" is a HARD request',
+  classifyDeliverables('can you drop the retry logic from queue.js?').hard.includes('queue.js'));
+// comment-vector close-fix
+ok('comment-vector: a symbol delivered only in a COMMENT does NOT close the task (still pending)',
+  updateTaskLedger([], ['wire up fooBar'], '+++ b/a.js\n+  // fooBar goes here')[0].status === 'pending');
+ok('comment-vector: the same symbol in CODE closes the task (done)',
+  updateTaskLedger([], ['wire up fooBar'], '+++ b/a.js\n+  const fooBar = 1;')[0].status === 'done');
+// H1 regression: a soft token grounding must NOT close a HARD task whose real deliverable is absent.
+ok('H1: a hard task is NOT closed by a soft/reference token grounding (only its own hard token closes it)',
+  updateTaskLedger([], ['`handleUpload` is fine, but fix retry.js'], '+++ b/a.js\n+function handleUpload(){}')[0].status === 'pending');
+{
+  const t0 = { id: 't1', task: 'add retry to upload.js', deliverable: ['upload.js'], tier: 'hard', status: 'pending' };
+  const s1 = surfaceOpenLoop(t0, 'working on it');
+  ok('nag-once: first surface of a hard pending task → warn finding (not quiet) + marks surfaced',
+    s1.finding && s1.finding.sev === 'warn' && !s1.finding.quiet && s1.task.surfaced === true);
+  // H2 regression: a still-pending hard task STAYS on the card (finding emitted) but is marked quiet (not re-injected).
+  const s2 = surfaceOpenLoop(s1.task, 'still going');
+  ok('H2: second turn, no claim → still emits a pending finding (quiet != green) but marked quiet (not re-injected)',
+    s2.finding && s2.finding.sev === 'warn' && s2.finding.quiet === true);
+  ok('per-token done-match: a claim naming THIS task\'s token → BLOCK (escalate)',
+    surfaceOpenLoop(s1.task, 'Done — added upload.js retry').finding?.sev === 'block');
+  const other = { id: 't2', task: 'fix parser.js', deliverable: ['parser.js'], tier: 'hard', status: 'pending', surfaced: true };
+  ok('per-token done-match: a generic "all done" NOT naming this token does NOT escalate it (stays warn/quiet)',
+    surfaceOpenLoop(other, 'all done, everything works!').finding?.sev === 'warn');
+  // M3 regression: an HONEST "still pending" disclosure naming the token must NOT false-block.
+  ok('M3: "Done with parser; upload.js still pending — will do next" does NOT falsely escalate upload.js to block',
+    surfaceOpenLoop(t0, 'Done with the parser; upload.js still pending — will do next').finding?.sev !== 'block');
+  // Pass-2 defect B (dodge): a genuine false "done" claiming the token complete must BLOCK even if guard words
+  // about OTHER work sit farther off in the sentence (proximity guard, not whole-clause).
+  ok('proximity-B: "Done — upload.js is complete, nothing pending, will close out" STILL blocks (no far-away dodge)',
+    surfaceOpenLoop(t0, 'Done — upload.js is complete, nothing pending, will close out').finding?.sev === 'block');
+  // Pass-2 defect A (false-block): "not yet done" adjacent to the token is an honest disclosure → NOT block.
+  ok('proximity-A: "upload.js not yet done" is an honest disclosure → NOT a false block',
+    surfaceOpenLoop(t0, 'upload.js not yet done').finding?.sev !== 'block');
+  ok('proximity-A: "parser done; upload.js not yet done" → NOT a false block on upload.js',
+    surfaceOpenLoop(t0, 'parser done; upload.js not yet done').finding?.sev !== 'block');
+}
+ok('soft expiry: an aged-out soft aside stops nagging (no finding, marked stale)',
+  (() => { const s = surfaceOpenLoop({ id: 't3', task: 'x', deliverable: ['handleFoo'], tier: 'soft', status: 'pending', surfaced: true, age: 5 }, ''); return s.finding === null && s.task.status === 'stale'; })());
+ok('soft first-surface: a soft aside surfaces ONCE as info (never block, even with a done-claim)',
+  (() => { const s = surfaceOpenLoop({ id: 't4', task: 'the 304 is fine', deliverable: ['handleBar'], tier: 'soft', status: 'pending' }, 'Done — handleBar shipped'); return s.finding && s.finding.sev === 'info'; })());
 
 console.log(`\n${pass} checks passed.`);

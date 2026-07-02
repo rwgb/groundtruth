@@ -52,7 +52,10 @@ const RULE_SRC_RE = /(^|\/)(CLAUDE|AGENTS|SCHEMA)\.md$|(^|\/)ARCHITECTURE\.md$|\
 // Shared classifiers — used by both Verify (analyze, on a diff) and Audit (scanContent, on whole files).
 // Markers are UPPERCASE-only by convention: that avoids matching `xxx` in a URL or a `todo` variable
 // (false positives are fatal). The phrase forms stay case-insensitive.
-const STUB_MARKER_RE = /\b(TODO|FIXME|XXX|HACK)\b/i;   // case-insensitive: `// todo` is as much a stub as `// TODO`
+// case-insensitive (`// todo` is as much a stub as `// TODO`). The `(?![/|)])` excludes enumeration
+// punctuation right after the marker (`TODO/FIXME`, `HACK)`, `XXX|…`) — a list DOCUMENTING the markers, never
+// a real one, which a real marker (`TODO:`, `TODO ` + text, `TODO(user)`) still satisfies.
+const STUB_MARKER_RE = /\b(TODO|FIXME|XXX|HACK)\b(?![/|)])/i;
 // "not implemented" counts only as a CODE stub (thrown/raised/the language's idiom), never as free prose —
 // a doc comment like "(not implemented precisely)" or a quoted external error is a design note, not debt.
 // Cross-language idioms: JS `throw new …Error('…not implemented')`; Python NotImplementedError; Rust
@@ -60,12 +63,83 @@ const STUB_MARKER_RE = /\b(TODO|FIXME|XXX|HACK)\b/i;   // case-insensitive: `// 
 // NotImplementedException / UnsupportedOperationException; Kotlin `TODO()`.
 const STUB_PHRASE_RE = /\bNotImplementedError\b|\braise\s+NotImplemented|throw\s+new\s+\w*Error\(\s*['"`][^'"`]*not implemented|\b(?:todo|unimplemented|unreachable)!\s*\(|\bpanic[!]?\s*\(\s*['"`][^'"`]*(?:not implemented|todo)|\bNotImplementedException\b|\bUnsupportedOperationException\b|\bTODO\s*\(\s*\)/i;
 const ONLY_STUB_LINE_RE = /^\s*pass\s*$/;                          // a Python body that is only `pass`
-function isStub(s) { return STUB_MARKER_RE.test(s) || STUB_PHRASE_RE.test(s) || ONLY_STUB_LINE_RE.test(s); }
+// Phrase-stubs (NotImplemented/throw…not implemented/bare `pass`) are code IDIOMS — meaningful anywhere they
+// appear, so position-independent. The bare MARKER (TODO/FIXME/XXX/HACK) is different: it's debt only in
+// COMMENT/PROSE position. The same token inside a string, a regex literal, JSON data, or a fenced/inline-code
+// QUOTE is a MENTION, not debt — that is the self-match FP class (GT flagging its own `STUB_MARKER_RE = /…TODO…/`
+// and a `// TODO` quoted inside a demo card). See stubMarkerInComment. (Fable: "firing was cheaper than lexing"
+// — fix it once at the shared match layer.)
+const extOf = (p) => (String(p).match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
+const C_STYLE = new Set('js ts mjs cjs jsx tsx go rs java kt kts c cc cpp cxx h hpp cs swift scala php dart m mm vue svelte'.split(' '));
+const HASH    = new Set('py rb sh bash yaml yml toml ex exs'.split(' '));
+const DASH    = new Set('sql lua'.split(' '));
+// Blank string literals so a `//`/`#` INSIDE a string ("http://…") isn't mistaken for a comment opener.
+// Regex literals need no blanking — they carry no comment opener. Length-preserving (indices stay aligned).
+const blankStrings = (s) => s.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => ' '.repeat(m.length));
+// Split a source line into { code, comment }. `state` (mutated) threads block-comment (`/* */`) across
+// lines — exact in full-file audit, best-effort on a diff (an opener on a prior UNCHANGED line can slip;
+// documented limit, not silent). String literals are blanked only to FIND the opener, so the returned
+// slices keep original text.
+function splitCodeComment(rawLine, ext, state) {
+  const cat = C_STYLE.has(ext) ? 'c' : HASH.has(ext) ? 'h' : DASH.has(ext) ? 'd' : 'x';
+  const blanked = blankStrings(rawLine);
+  if (state.block) {                                                    // inside an open /* … */
+    const end = blanked.indexOf('*/');
+    if (end === -1) return { code: '', comment: rawLine };             // whole line still comment
+    state.block = false;
+    const rest = splitCodeComment(rawLine.slice(end + 2), ext, state);  // code may follow the close
+    return { code: rest.code, comment: rawLine.slice(0, end) + ' ' + rest.comment };
+  }
+  const openRe = cat === 'c' ? /\/\/|\/\*/ : cat === 'h' ? /#/ : cat === 'd' ? /--/ : /\/\/|#|\/\*|--/;
+  const m = blanked.match(openRe);
+  if (!m) return { code: rawLine, comment: '' };
+  const code = rawLine.slice(0, m.index);
+  if (m[0] === '/*') {
+    const after = rawLine.slice(m.index + 2), close = blankStrings(after).indexOf('*/');
+    if (close === -1) { state.block = true; return { code, comment: after }; }
+    return { code: code + ' ' + after.slice(close + 2), comment: after.slice(0, close) };
+  }
+  return { code, comment: rawLine.slice(m.index) };                     // line comment → EOL
+}
+// Is this line a stub? MARKERS (`TODO`/`FIXME`/`XXX`/`HACK`) count only in COMMENT position, with inline-code
+// (`…`) blanked — a comment that merely *documents* a marker (a backtick example, or prose about the
+// detector) is a mention, not debt. PHRASE-idioms (NotImplemented / throw…not implemented / Rust
+// `todo!()`) count only in CODE position — the idiom lives in code; the same words inside a comment are a
+// mention. `pass` is a whole-line Python stub. (Ceiling per Fable: a bare `TODO` written as bare prose inside
+// a comment — no backticks — is indistinguishable from a real one deterministically; that's a documented limit.)
+function lineIsStub(rawLine, ext, state) {
+  if (ONLY_STUB_LINE_RE.test(rawLine)) return true;
+  if (ext === 'md' || ext === 'markdown') {
+    if (/^\s*```/.test(rawLine)) { state.fence = !state.fence; return false; }
+    if (state.fence) return false;                                     // fenced code = quotation
+    const prose = rawLine.replace(/`[^`]*`/g, ' ');                    // minus inline-code spans
+    return STUB_MARKER_RE.test(prose) || STUB_PHRASE_RE.test(prose);
+  }
+  const { code, comment } = splitCodeComment(rawLine, ext, state);
+  return STUB_MARKER_RE.test(comment.replace(/`[^`]*`/g, ' ')) || STUB_PHRASE_RE.test(code);
+}
+
+// Paths whose findings are noise, not delivery — excluded from the per-turn SCAN entirely (Fable: audit the
+// delivery, not the sandbox). GT's OWN state is integrity-signed (a stronger sensor already covers it);
+// out-of-repo throwaways (scratchpad/tmp, absolute paths, ../ escapes that reach the scan via the tool-ledger)
+// are not deliverables. This removes a redundant weaker sensor over files a dedicated stronger one covers.
+export function excludedScanPath(f) {
+  return /^\//.test(f)                                        // absolute → outside the diffed repo tree
+    || /(^|\/)\.\.\//.test(f)                                 // parent-dir escape
+    || /(^|\/)(?:tmp|temp|scratch|scratchpad)\//i.test(f)     // throwaway sandboxes
+    || /(^|\/)\.claude\/groundtruth\//.test(f);               // GT's own state (covered by the integrity signature)
+}
+// Drop whole excluded FILE blocks from a unified-diff string (content before the first `+++` header is kept).
+export function dropExcludedFiles(diff) {
+  return String(diff).split(/(?=^\+\+\+ b\/)/m)
+    .filter(b => { const m = b.match(/^\+\+\+ b\/(.+)$/m); return !m || !excludedScanPath(m[1]); })
+    .join('');
+}
 
 // Source-file extensions recognized when a filename is NAMED in prose (Class-3 no-op claims, deliverable
 // tracking, intent gradeability). Broad on purpose — matching a CLAIMED filename should work in any
 // language. Distinct from CODE_EXT_RE, the narrower code-only set the --audit walker scans for stub/phantom
-// debt (markup/docs/config are matchable-as-claims but a TODO in a .md/.yaml is content, not debt).
+// debt (markup/docs/config are matchable-as-claims but a `TODO` in a .md/.yaml is content, not debt).
 const SRC_EXT = 'js|ts|mjs|cjs|jsx|tsx|py|go|rs|rb|java|kt|kts|c|cc|cpp|cxx|h|hpp|cs|php|swift|scala|sh|bash|m|mm|vue|svelte|ex|exs|clj|cljs|lua|dart|html|css|scss|sql|json|yaml|yml|toml|md';
 const CODE_EXT_RE = /\.(js|ts|mjs|cjs|jsx|tsx|py|go|rb|java|rs|php|kt|kts|c|cc|cpp|cxx|h|hpp|cs|swift|scala|sh|bash|m|mm|ex|exs|clj|cljs|lua|dart)$/i;
 
@@ -118,12 +192,36 @@ const SECRET_RES = [
   ['C1', 'Slack token',     /\bxox[baprs]-[0-9A-Za-z-]{10,}\b/],
   ['C2', 'private key',     /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/],
 ];
-function isSecret(line) {
+// Published, vendor-documented EXAMPLE credentials — literally never real, so recognizing the exact STRING
+// (not the file it lives in) lets an example key never buy a false BLOCK while a real high-entropy key in
+// the same file still blocks. Decide on CONTENT, not location — location is attacker-choosable (Fable). The
+// AWS docs example access key is the one that produced our live block-severity FP (it's in the red-team).
+const EXAMPLE_SECRETS = new Set([
+  'AKIAIOSFODNN7EXAMPLE',                                   // AWS documentation's example access key id
+]);
+// A token/line carrying a synthetic marker is a placeholder, not a leak → DEMOTE to warn (never silence:
+// the finding stays on the card, so "hide a real key behind a FAKE_ comment" can't silently pass — it's
+// just no longer a block). Real secrets opt OUT of the test-path demotion other checks get, precisely
+// because a fixture secret is sometimes real; only self-marking / allowlisted ones demote.
+// letter-boundaries (not \b): `_`/digits count as boundaries so `FAKE_KEY`/`TEST_KEY` match, but a real
+// word like `FAKER`/`SAMPLED` does not (a letter on either side blocks it).
+const SYNTHETIC_MARKER_RE = /(?<![A-Za-z])(?:EXAMPLE|SAMPLE|FAKE|DUMMY|PLACEHOLDER|REDACTED|XXXX+|YOUR|TEST[_-]?KEY|NOT[_-]?REAL|DO[_-]?NOT[_-]?USE)(?![A-Za-z])/i;
+export function isSecret(line) {
   // Also test a concat-collapsed copy so `"AKIA" + "0123456789ABCDEF"` (split to dodge the regex) is
   // caught — the runtime value is identical. Collapsing only removes string-join glue between quotes,
   // so this file's own regex literals (no such glue) still can't self-match.
   const joined = line.replace(/['"`]\s*[+.&]\s*['"`]/g, '');
-  for (const [id, label, re] of SECRET_RES) if (re.test(line) || re.test(joined)) return { id, label };
+  for (const [id, label, re] of SECRET_RES) {
+    const m = re.exec(line) || re.exec(joined);
+    if (m) {
+      // Decide on the KEY TOKEN ITSELF only — never on the rest of the line. A marker ANYWHERE on the line
+      // ("// example", a `FAKE_` var name next to a live key) is attacker-choosable, so line-context demotion
+      // was a block-gate bypass (Fable C1). Only an allowlisted example key or a marker INSIDE the matched
+      // token (e.g. `AKIAIOSFODNN7EXAMPLE`) demotes; every other real-format key still blocks.
+      const benign = EXAMPLE_SECRETS.has(m[0]) || SYNTHETIC_MARKER_RE.test(m[0]);
+      return { id, label, benign };
+    }
+  }
   return null;
 }
 
@@ -217,8 +315,22 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
       ? 'claimed done/clean while also saying the work is still running/deferred — the deliverable is not produced yet (not "done")'
       : 'claimed done/clean, but a background task launched this session has no completion record — the deliverable is not produced yet (not "done")' });
 
-  // Class 2 — stub / placeholder in NEWLY ADDED lines only
-  const stub = added.map(l => l.slice(1)).find(isStub);
+  // Class 2 — stub / placeholder in NEWLY ADDED lines only. Markers are position-aware (comment/prose only —
+  // per file, with block-comment/fence state threaded across that file's added lines); phrase-stubs anywhere.
+  let stub = null;
+  {
+    const byFile = {}; let cf = '';
+    for (const l of diff.split('\n')) {
+      const h = l.match(/^\+\+\+ b\/(.+)$/);
+      if (h) { cf = h[1] === '/dev/null' ? '' : h[1]; continue; }
+      if (l[0] === '+' && !l.startsWith('+++') && cf) (byFile[cf] ||= []).push(l.slice(1));
+    }
+    outer:
+    for (const [f, lines] of Object.entries(byFile)) {
+      const ext = extOf(f), state = { block: false, fence: false };
+      for (const ln of lines) if (lineIsStub(ln, ext, state)) { stub = ln; break outer; }
+    }
+  }
   if (stub) findings.push({ cls: 2, sev: 'warn', msg: `stub/placeholder in added code: ${stub.trim().slice(0, 60)}` });
 
   // Class 3 — silent no-op: claim names a file in PAST-TENSE ACTION voice, but it's absent from
@@ -256,7 +368,9 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
     if (l[0] !== '+' || l.startsWith('+++') || !curFile) continue;
     if (curLang) {                                                               // Class 4 — phantom ref (import langs only)
       const m = l.match(curLang.re);
-      if (m && !relImportResolves(cwd, curFile, m[1], curLang.suffixes))
+      // Real import only if the KEYWORD survives string-blanking at its position — an import-shaped substring
+      // INSIDE a string literal (`const d = "+import x from './h'"`, a test fixture) is not a real import.
+      if (m && blankStrings(l)[m.index] !== ' ' && !relImportResolves(cwd, curFile, m[1], curLang.suffixes))
         findings.push({ cls: 4, sev: 'warn', msg: `new import may not resolve: ${m[1]} (in ${curFile})` });
     }
     if (curSrc && !sawC9 && EVALUATOR_DETECT_RE.test(l)) {                       // Class 9 — special-casing the evaluator
@@ -271,7 +385,10 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
   // C1/C2 — a known-format secret in added code (any file). One finding is enough to block.
   for (const l of added) {
     const s = isSecret(l.slice(1));
-    if (s) { findings.push({ cls: s.id, sev: 'block', msg: `${s.label} hardcoded in added code` }); break; }
+    if (s) { findings.push({ cls: s.id, sev: s.benign ? 'warn' : 'block',
+      msg: s.benign
+        ? `${s.label}-shaped token in added code, but it looks like a published example / synthetic placeholder — demoted from block; confirm it isn't a real key`
+        : `${s.label} hardcoded in added code` }); break; }
   }
 
   // SQL checks (B1/B3) scan ONLY added lines in .sql files, with `--` comments STRIPPED — a doc, OR a
@@ -323,13 +440,14 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
 export function scanContent(relPath, text, cwd = process.cwd()) {
   const out = [];
   const lang = importLang(relPath);                      // null for a language whose imports we don't resolve
+  const ext = extOf(relPath), state = { block: false, fence: false };   // full-file → exact block-comment/fence state
   text.split('\n').forEach((line, i) => {
     const n = i + 1;
-    if (isStub(line))
+    if (lineIsStub(line, ext, state))
       out.push({ cls: 2, sev: 'warn', file: relPath, line: n, msg: line.trim().slice(0, 80) });
     if (!lang) return;                                    // abstain on phantom-refs for unsupported languages
     const m = line.match(lang.re);
-    if (m && !relImportResolves(cwd, relPath, m[1], lang.suffixes))
+    if (m && blankStrings(line)[m.index] !== ' ' && !relImportResolves(cwd, relPath, m[1], lang.suffixes))
       out.push({ cls: 4, sev: 'warn', file: relPath, line: n, msg: `unresolved import ${m[1]}` });
   });
   return out;
@@ -399,6 +517,15 @@ export function compileRuleRe(pattern) {
   let src = String(pattern), flags = 'i';
   const m = src.match(/^\(\?([a-zA-Z]+)\)/);
   if (m) { src = src.slice(m[0].length); if (m[1].includes('m')) flags += 'm'; if (m[1].includes('s')) flags += 's'; }
+  // Member-access-safe boundary for CALL-forbidding rules (the `$eval` FP). A rule like `\beval\s*\(` is
+  // meant to forbid the GLOBAL `eval()` — but `\b` treats `.`/`$` as a word boundary, so it over-matches a
+  // METHOD call `x.eval()` / Playwright's `page.$eval()` (a different function). Upgrade a LEADING `\b`
+  // before an identifier to a lookbehind that also excludes `.`/`$`/word — but ONLY when the pattern forbids
+  // a CALL (an escaped `\(` is present), so an identifier/column rule like `\bsignup_date\b` (which SHOULD
+  // still match `row.signup_date`) is left untouched. Applied at the shared normalizer so it fixes seed,
+  // extracted, and already-armed rules at runtime with no re-arm. `(?<![\w$.])` == the tokenizer's real
+  // "start of a standalone identifier".
+  if (/^\\b[A-Za-z_$]/.test(src) && /\\\(/.test(src)) src = src.replace(/^\\b/, '(?<![\\w$.])');
   return new RegExp(src, flags);
 }
 
@@ -421,17 +548,30 @@ export function runCompiledRules(diff, rules) {
     try { fre = compileRuleRe(r.file_re); lre = r.line_re && compileRuleRe(r.line_re); ure = r.unless_re && compileRuleRe(r.unless_re); }
     catch (e) { out.push({ cls: 'R', sev: 'warn', rule: r.id, msg: `rule ${r.id} is INERT — its regex does not compile (${String(e.message).slice(0, 60)}); fix its file_re/line_re or it enforces nothing` }); continue; }
     const sev = r.severity === 'block' ? 'block' : 'warn';   // auto-compiled = warn unless a human promoted it
+    // Provenance: a rule COMPILED FROM a doc must never fire on that same doc — the declaring file is
+    // mention-context by construction (`ARCHITECTURE.md: never eval` shouldn't flag ARCHITECTURE.md). Zero
+    // hand-maintenance: the source is recorded on the rule. (Seed rules name no declaring doc → no skip.)
+    const declBase = (String(r.source || '').match(/extracted from ([^:]+):/) || [])[1]?.split('/').pop();
+    // A CALL-forbidding rule (line_re targets a `\(` call, e.g. `\beval\s*\(`) matching inside a COMMENT is a
+    // mention, not a use — so test such rules against the CODE portion only (a comment `// use of eval()` is
+    // documentation). Non-call rules are left whole: some legitimately target comments (`@ts-ignore`, a slur).
+    const callRule = /\\\(/.test(String(r.line_re || ''));
+    const skipDecl = (f) => declBase && f.split('/').pop() === declBase;
     if (r.kind === 'forbid_path') {
-      const hit = files.find(f => fre.test(f));
+      const hit = files.find(f => fre.test(f) && !skipDecl(f));
       if (hit) out.push({ cls: 'R', sev, rule: r.id, msg: `${r.message || r.id} (${hit})` });
     } else if (r.kind === 'forbid_in_added' && lre) {
       // B1 — an unless_re that matches EVERYTHING (e.g. `.*`) suppresses every hit, so the rule can never
       // fire: an "armed" inert rule that gives false confidence. Surface it instead of silently passing.
       if (ure && ure.test('')) { out.push({ cls: 'R', sev: 'warn', rule: r.id, msg: `rule ${r.id} is INERT — its unless_re matches every line, so it can never fire (vacuous or neutered)` }); continue; }
       for (const f of files) {
-        if (!fre.test(f)) continue;
-        const bad = byFile[f].find(x => lre.test(x));
-        if (!bad) continue;
+        if (!fre.test(f) || skipDecl(f)) continue;
+        const ext = extOf(f), st = { block: false, fence: false };
+        // matchable view: call-rules see code only (comments stripped, state threaded in line order); others raw
+        const view = callRule ? byFile[f].map(x => splitCodeComment(x, ext, st).code) : byFile[f];
+        const idx = view.findIndex(x => lre.test(x));
+        if (idx === -1) continue;
+        const bad = byFile[f][idx];                            // report the ORIGINAL line, not the stripped view
         // B2 — the rule WOULD fire, but an unless_re token on a this-turn added line suppresses it. The
         // escape hatch is legit, but adding it alongside a violation must be visible, not silent (byFile =
         // this turn's added lines, so any suppressing token here was introduced this turn).
@@ -574,20 +714,36 @@ export function parseTranscript(jsonlText) {
 // `SCHEMA.md`, and the case-sensitive miss was a false open-loop / silent-no-op (the whole reason this
 // exists). Symbols/identifiers stay case-sensitive: code is case-sensitive, so `fooBar` ≠ `foobar`.
 const FILENAME_TOKEN_RE = new RegExp('[\\w/-]+\\.(?:' + SRC_EXT + ')$', 'i');
-function grounds(token, changed, changedLower) {
+// A SYMBOL deliverable grounds only when it lands in CODE, not in a `// TODO: handleUpload` comment mention
+// (the comment-vector cheap-close — the cheapest green is to name the symbol in a comment). A FILENAME grounds
+// via the diff's `+++` headers (never a comment), so it uses the full `changed`. `code` = added lines with
+// comments stripped (built by codeOnlyAdded); when absent, falls back to `changed` (back-compat).
+function grounds(token, changed, changedLower, code) {
   return FILENAME_TOKEN_RE.test(token)
     ? (changedLower ?? changed.toLowerCase()).includes(token.toLowerCase())
-    : changed.includes(token);
+    : (code ?? changed).includes(token);
+}
+// Added lines with comments stripped, per file (block-comment/fence state threaded) — the CODE reality a
+// symbol deliverable must appear in to count as delivered.
+function codeOnlyAdded(diff) {
+  let out = '', cf = '', ext = '', st = { block: false, fence: false };
+  for (const l of String(diff).split('\n')) {
+    const h = l.match(/^\+\+\+ b\/(.+)$/);
+    if (h) { cf = h[1] === '/dev/null' ? '' : h[1]; ext = extOf(cf); st = { block: false, fence: false }; continue; }
+    if (l[0] === '+' && !l.startsWith('+++') && cf) out += splitCodeComment(l.slice(1), ext, st).code + '\n';
+  }
+  return out;
 }
 
 export function openLoops(asks = [], diff = '') {
   const changed = changedFiles(diff).join('\n') + '\n' + diff;
   const changedLower = changed.toLowerCase();
+  const code = codeOnlyAdded(diff);
   const open = [];
   for (const a of asks) {
-    const named = namedDeliverables(a);                       // grounded, filtered (see below)
-    if (!named.length) continue;                              // no gradeable deliverable → don't nag
-    if (!named.some(n => grounds(n, changed, changedLower))) // named something, but it's absent from the diff
+    const named = namedDeliverables(a);                       // HARD deliverables only (nag-worthy)
+    if (!named.length) continue;                              // no gradeable HARD deliverable → don't nag
+    if (!named.some(n => grounds(n, changed, changedLower, code))) // named something, but it's absent from the diff
       open.push({ ask: a.length > 90 ? a.slice(0, 90) + '…' : a, missing: named.slice(0, 3) });
   }
   return open;
@@ -602,10 +758,47 @@ export function openLoops(asks = [], diff = '') {
 const NONREPO_OR_TOOL = /(?:^\/|(?:^|\/)(?:tmp|temp|scratch|scratchpad)\/|\.claude\/groundtruth\/|^tasks\.json$|^(?:compiled|proposed)-rules\.json$)/i;
 const CONVENTION_DOC = /^(?:CLAUDE|AGENTS|README|SCHEMA|ARCHITECTURE|CONTRIBUTING|LICENSE|CHANGELOG|ROADMAP|HANDOFF)\.md$/i;
 
-// A concrete deliverable named in an ask = a path/filename, a `backticked` token, or a camelCase symbol —
-// MINUS the buckets above. Abstaining here is the point: a false "you didn't deliver X" is worse than a
-// missed open loop, because it's what pushes an agent to dodge. When unsure, don't track.
-function namedDeliverables(text) {
+// ── Request/non-request gate — kill the "conversational aside → open loop" false positive, deterministically ──
+// The ledger used to mint a task from ANY deliverable-looking token, even when the sentence was an OBSERVATION,
+// not a request ("I can see a 304 in `handleUpload`, it's fine, no fix needed"). That's the live FP: an aside
+// tracked as an undelivered deliverable, nagged every turn. No LLM — this is just the ledger's own "when
+// unsure, don't track" extended to the sentence's framing. A model in front of every stop would (a) void the
+// "deterministic, offline, no-LLM" positioning and (b) let a model SILENTLY SUPPRESS a real open-loop (an
+// invisible false-negative is worse than a visible over-nag), so the fix stays regex.
+const NON_REQUEST_RE = new RegExp([
+  // "X is fine / it's ok / that's expected / looks correct" — a bare copula counts, not just it's/that's,
+  // so "the 304 is fine" reads as an observation (a real request keeps its action verb after the strip).
+  "\\b(?:that'?s|it'?s|this is|which is|is|are|was|were|looks?|seems?|appears?)\\s+(?:fine|ok|okay|expected|intentional|correct|working|by design|working as intended)\\b",
+  "\\bno\\s+(?:fix|change|action|need)\\b",
+  "\\b(?:don'?t|do not|no need to)\\s+(?:worry|fix|touch|change|bother)\\b",
+  "\\b(?:ignore|leave|disregard)\\s+(?:the|that|this|it)\\b",
+  "\\bnot a (?:problem|bug|blocker)\\b|\\bexpected behaviou?r\\b",
+  "\\bi(?:'?m| am)?\\s+(?:can\\s+)?(?:see|seeing|noticed?|getting)\\b",
+  "\\b(?:looks?|seems?|appears?)\\s+(?:like|to be|fine|ok)\\b",
+  "\\b(?:fyi|just noting|for (?:reference|context|the record))\\b",
+].join("|"), "i");
+// A positive request signal — an imperative aimed at the codebase.
+const REQUEST_VERB_RE = /\b(?:add|create|implement|build|write|fix|change|update|edit|modif\w+|refactor|remove|delete|replace|wire|make|handle|support|migrate|rename|extract|revert|patch|correct|move|drop|split|port|convert|pull|hoist|rework|swap|introduce|append|generate|set\s+up|hook\s+up)\b/i;
+// A turn read as a QUESTION (interrogative) — a distinct FP class from the dismissals above ("is report.js
+// right?"), also answered in conversation with no diff.
+const QUESTION_RE = /\?\s*$|^\s*(?:why|what|whats?|how|is|are|was|were|does|do|did|should|shall|can|could|would|will|which|when|where|who|whom|whose)\b/i;
+// Trackable iff it is NOT (framed as observation/question with no surviving action verb). The verb test runs
+// on the text with the dismissal phrases STRIPPED — critical, because "no fix needed" itself contains the
+// verb "fix"; testing the raw string would let that negated "fix" mark the aside as a real request (the bug
+// in the naive `NON_REQUEST && !REQUEST_VERB` form). "…is fine but fix the 500 in retry.js" keeps a real,
+// un-stripped "fix" → still tracked. Exported for the self-check.
+export function isTrackableRequest(text) {
+  const s = String(text);
+  const framed = NON_REQUEST_RE.test(s) || QUESTION_RE.test(s);
+  if (!framed) return true;                                          // plain imperative → track
+  const stripped = s.replace(new RegExp(NON_REQUEST_RE.source, 'gi'), ' ');   // drop "no fix"/"it's fine"/… so their inner verbs don't count
+  return REQUEST_VERB_RE.test(stripped);                            // a real (non-negated) action verb survives → still a request
+}
+
+// Pure token extraction: a path/filename, a `backticked` token, or a camelCase symbol — MINUS the buckets
+// above (out-of-repo, tool-state, read-only convention docs). No framing gate here — the gate/tier decision
+// lives in classifyDeliverables so a questionable ask is DEMOTED (to soft), never silently dropped.
+function extractTokens(text) {
   const t = String(text);
   const writesADoc = /\b(?:write|update|edit|modif\w+|append|add(?:ing)?\s+to|rewrite|create|regenerate|fix|change|replace|remove|delete|correct|revise|adjust|patch)\b/i.test(t);
   return (t.match(new RegExp('[\\w/-]+\\.(?:' + SRC_EXT + ')\\b|`[^`]+`|\\b[a-z]+[A-Z][a-zA-Z]+\\b', 'g')) || [])
@@ -613,6 +806,48 @@ function namedDeliverables(text) {
     .filter(s => !NONREPO_OR_TOOL.test(s))                    // can't appear in a git diff → never a deliverable
     .filter(s => !(CONVENTION_DOC.test(s.split('/').pop()) && !writesADoc));  // a doc is a read target unless written
 }
+
+// Clause boundaries — so a token binds to the framing of ITS OWN clause, not the whole turn. "handleUpload is
+// fine, but fix retry.js" must bind retry.js (its clause commands 'fix') apart from handleUpload (its clause
+// is 'is fine'). Split on sentence enders + contrastive conjunctions.
+function splitClauses(text) {
+  // A `.` is a sentence boundary ONLY when followed by whitespace/end — NOT the dot inside `compiler.mjs`
+  // or `3.14` (which a naive `[.;]` split would shred, destroying the filename token).
+  return String(text).split(/\.(?=\s|$)|[;\n]+|\bbut\b|\bhowever\b|\bthough\b|\bwhereas\b|\byet\b/i).map(s => s.trim()).filter(Boolean);
+}
+// A token is a REFERENCE (discussion), not a COMMISSION, when its only occurrence in the ask is inside a
+// PASTED artifact — a ``` fence, a `>`-quoted line, or a `file.js:line` stack-trace ref (paste-provenance,
+// the real `redirectionChainSiteScript.js` case). Reference tokens DEMOTE to soft (demote-don't-drop).
+// NOTE: token-novelty via prior AGENT text was REMOVED (Fable C2) — the agent's own reply is agent-influenceable
+// and demoted the very ask it was answering; an audited agent must never be able to shape its own verdict.
+// Paste-provenance stays because it's grounded in the USER's text, which the agent can't author.
+function pasteStripped(askText) {
+  return String(askText)
+    .replace(/```[\s\S]*?```/g, ' ')                 // fenced code blocks
+    .replace(/^\s*>.*$/gm, ' ')                       // quoted pasted lines
+    .replace(/[\w./-]+\.\w+:\d+/g, ' ');              // stack-trace file:line refs
+}
+
+// Classify an ask's deliverable tokens into HARD (an imperative request naming a fresh deliverable — nag-once,
+// can escalate to block) vs SOFT (named a deliverable but framed as observation/question, or a paste-reference
+// — surfaced once, never blocks, auto-expires). Paste-provenance is computed on the FULL ask ONCE, before
+// clause-splitting (splitClauses shreds a ``` fence into separate clauses, so a per-clause paste check was
+// structurally blind — Fable M2). Per-clause framing then binds each token; a token HARD in any clause stays hard.
+export function classifyDeliverables(text) {
+  const full = String(text);
+  const paste = pasteStripped(full);
+  const isRef = (tok) => { const b = tok.replace(/`/g, ''); return full.includes(b) && !paste.includes(b); };
+  const hard = new Set(), soft = new Set();
+  for (const clause of splitClauses(full)) {
+    const req = isTrackableRequest(clause);
+    for (const tok of extractTokens(clause))
+      (req && !isRef(tok) ? hard : soft).add(tok);
+  }
+  for (const t of hard) soft.delete(t);                                        // hard wins over soft
+  return { hard: [...hard], soft: [...soft] };
+}
+// Back-compat shim: the HARD deliverables of an ask (the nag-worthy ones). Used by openLoops.
+function namedDeliverables(text) { return classifyDeliverables(text).hard; }
 
 /**
  * Task ledger — the PERSISTENT contract memory, one task per user ask that names a deliverable. A task
@@ -625,25 +860,88 @@ function namedDeliverables(text) {
 export function updateTaskLedger(prior = [], asks = [], diff = '') {
   const changed = changedFiles(diff).join('\n') + '\n' + diff;
   const changedLower = changed.toLowerCase();
+  const code = codeOnlyAdded(diff);
   const byKey = new Map(prior.map(t => [t.task, t]));
   for (const a of asks) {
-    const deliverable = namedDeliverables(a);
-    if (!deliverable.length) continue;                        // no gradeable deliverable → not tracked
+    const { hard, soft } = classifyDeliverables(a);
+    // A task's deliverable = the tokens OF ITS OWN TIER. A HARD task must NOT be closed by a soft/reference
+    // token that happens to ground ("`handleUpload` is fine, but fix retry.js" → retry.js is the deliverable;
+    // handleUpload landing must not green it — Fable H1). A soft task closes on its own soft tokens.
+    const deliverable = hard.length ? hard : soft;
+    if (!deliverable.length) continue;                        // no gradeable deliverable at all → not tracked
+    const tier = hard.length ? 'hard' : 'soft';               // hard = imperative request; soft = aside/reference
     const task = a.length > 100 ? a.slice(0, 100) + '…' : a;
     let t = byKey.get(task);
-    if (!t) { t = { id: taskId(task), task, deliverable, status: 'pending' }; byKey.set(task, t); }
+    if (!t) { t = { id: taskId(task), task, deliverable, tier, status: 'pending' }; byKey.set(task, t); }
     if (!t.id) t.id = taskId(t.task);                          // backfill id on tasks from older ledgers
+    if (t.tier == null) t.tier = tier;                        // backfill tier on older ledgers
     // Recompute status from the diff EVERY turn — NEVER trust a persisted 'done'. An agent can forge
     // status:"done" straight into tasks.json (out of band, invisible to the tamper diff-scan), so 'done'
-    // must be re-derived: a task is done iff its deliverable still grounds in the cumulative diff, else
-    // pending. 'deferred' is human-confirmed only and re-validated separately (applyConfirmedDeferrals).
-    if (t.status !== 'deferred') t.status = deliverable.some(n => grounds(n, changed, changedLower)) ? 'done' : 'pending';
+    // must be re-derived: a task is done iff its deliverable still grounds (in CODE for a symbol — a comment
+    // mention doesn't close it) in the cumulative diff. 'deferred' is human-confirmed (applyConfirmedDeferrals).
+    if (t.status !== 'deferred') t.status = deliverable.some(n => grounds(n, changed, changedLower, code)) ? 'done' : 'pending';
   }
   return [...byKey.values()];
 }
 
 // Stable short id for a task (deterministic over its text) so a human can name it unambiguously.
 export const taskId = (s) => { let h = 0; for (const c of String(s)) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0; return 't' + (h >>> 0).toString(36).slice(0, 4); };
+
+// The Phase-6 surfacing decision, PURE (main maps every task through it, then persists the returned task).
+// Fable's cost model: a wrong mint must be cheap, so a loop surfaces ONCE at mint then goes quiet — it
+// resurfaces only when the agent CLAIMS it done (the moment to re-check). Per-token done-match: a task
+// escalates to BLOCK only if the completion claim references THAT task's own deliverable token — a generic
+// "all done!" no longer flips every unrelated pending task to block. Tiers: hard → warn (block on matching
+// claim), quiet after; soft → a one-time info "aside" (never injected/blocking), auto-expires after softExpire
+// turns. Returns { task: next-state, finding: {…}|null }. Exported for the self-check.
+// A completion claim about THIS token counts only if the clause naming the token is not itself negated /
+// deferred ("upload.js still pending — will do next" is an HONEST disclosure, not a false "done" — Fable M3).
+// Strong deferral/negation signals only. `remaining`/`left` are deliberately EXCLUDED: they invert
+// ("nothing remaining", "items left: none") and became a dodge that demoted a real false-done to warn; a
+// genuine "X still remaining" is already caught by `still`. Biasing toward BLOCK on the backstop is correct
+// (a missed false-done is worse than a rare false-block — Fable's severity call).
+const CLAIM_NEG_RE = /\b(?:still|pending|not|todo|will|next|blocked|unfinished|incomplete|wip|isn'?t|won'?t|haven'?t|instead|yet)\b/i;
+function claimClosesToken(claimMsg, tok) {
+  const bare = String(tok).replace(/`/g, '');
+  if (!COMPLETION_RE.test(claimMsg) || !claimMsg.includes(bare)) return false;
+  // Decide on PROXIMITY to the token, not the whole clause (Fable pass-2, defect A+B): a whole-clause test
+  // both let a far-away "pending/will" (about OTHER work) dodge a real false-done, AND — reusing the
+  // ask-oriented splitClauses, which splits on `yet` — shredded "not yet done" into a false block. Test a
+  // tight word window around EACH occurrence: the token closes only when NONE describes it as deferred/negated.
+  // ponytail: fixed ±3-word window is the tuning knob — widen only if a real negation lands just outside it
+  //           (too wide re-admits the "nothing pending" dodge from 4 words away).
+  const words = String(claimMsg).split(/\s+/);
+  for (let i = 0; i < words.length; i++) {
+    if (!words[i].includes(bare)) continue;
+    if (!CLAIM_NEG_RE.test(words.slice(Math.max(0, i - 3), i + 4).join(' '))) return true;  // unqualified done here
+  }
+  return false;
+}
+export function surfaceOpenLoop(t, claimMsg = '', softExpire = 3) {
+  if (t.status !== 'pending')                                     // done → reset so a re-open nags again
+    return { task: t.status === 'done' ? { ...t, surfaced: false, age: 0 } : t, finding: null };
+  const age = (t.age || 0) + 1;
+  const claimed = (t.deliverable || []).some(tok => claimClosesToken(claimMsg, tok));   // per-token done-match, negation-aware
+  const missing = (t.deliverable || []).slice(0, 2).join(' / ');
+  if (t.tier === 'soft') {
+    // soft aside: surface ONCE as a quiet info note, then stay silent, and auto-expire — never blocks, never
+    // re-nags. It's low-stakes by construction, so quiet == fine here (it does not misreport completion).
+    if (age > softExpire) return { task: { ...t, age, status: 'stale' }, finding: null };
+    if (t.surfaced) return { task: { ...t, age }, finding: null };
+    return { task: { ...t, age, surfaced: true }, finding: { cls: 'openloop', sev: 'info',
+      msg: `unconfirmed aside [${t.id}] — "${t.task}" (named ${missing} but framed as an observation/question, not a request — set aside; restate as an instruction to track, or reply \`defer ${t.id}\`)` } };
+  }
+  // HARD task: ALWAYS emit a finding so the card + verdict honestly reflect the still-pending task (quiet != green
+  // — Fable H2). nag-once controls only INJECTION: after the first surface, the finding is marked `quiet` so
+  // main won't re-inject it into the agent's context, but the user still sees "N pending". A matching done-claim
+  // escalates to block (and re-injects); otherwise warn.
+  const quiet = !!t.surfaced && !claimed;
+  return { task: { ...t, age, surfaced: true }, finding: { cls: 'openloop', sev: claimed ? 'block' : 'warn', quiet,
+    msg: `pending task [${t.id}] — "${t.task}"${t.deferRequested
+      ? ` (agent tried to defer this — only you can, by replying \`defer ${t.id}\`)`
+      : claimed ? ` — you claimed it done, but ${missing} is not in the diff`
+      : ` (no ${missing} in the diff yet — or reply \`defer ${t.id}\` to set aside)`}` } };
+}
 
 // Anti-gaming, the ACTUAL lever removal. The previous version trusted a file (confirmed-deferrals.json),
 // but a file is agent-writable — the agent can forge its own confirmation, so that's no confirmation at
@@ -759,11 +1057,24 @@ export function compareSnapshot(snap, curFiles = {}, commandsInvoked = new Set()
     // bug), keeping the dodge evident. CI re-snapshots same-run under the key (keyed:true), so the block path
     // above still bites where it actually enforces.
     out.push({ cls: 'tamper', sev: 'warn', msg: 'referee snapshot is unsigned while GROUNDTRUTH_KEY is set (it predates the key, or was downgraded) — re-run to re-snapshot under the key; integrity unverified this turn' });
+  // An out-of-band change is only AUTHORITATIVE in a trustworthy regime — a valid signature under a
+  // configured key. Without that, the whole hash-snapshot is best-effort (a laundered tamper can re-forge
+  // it), so firing a warn/block claims more confidence than the mechanism has, and it fired on every
+  // MCP/Bash session as noise (the empirical finding: keyed:false everywhere). Split the signal:
+  //   • trustworthy regime (key + valid sig), unratified change → a REAL finding (warn/block).
+  //   • else → a quiet coverage-gap NOTE (cls 'integrity_note', sev 'info'): shown in the card footer for
+  //     awareness, but NOT injected into the next turn and NOT flipping the verdict. Real enforcement is the
+  //     signature + a CI/pre-merge gate, exactly as integrityScope already states.
+  const trustworthy = keyConfigured && snap.sig && snap.sigValid === true;
   for (const { rel, ratifiedBy } of (snap.targets || [])) {
     if ((snap.files[rel] ?? null) === (curFiles[rel] ?? null)) continue;  // unchanged since session start
     if (ratifiedBy && commandsInvoked.has(ratifiedBy)) continue;          // human ran the command → legitimate
-    out.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn',
-      msg: `referee state changed OUT-OF-BAND since session start — ${rel.split('/').pop()} (a Bash/MCP write the diff can't see); verdict integrity NOT guaranteed` });
+    if (trustworthy)
+      out.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn',
+        msg: `referee state changed OUT-OF-BAND since session start — ${rel.split('/').pop()} (a Bash/MCP write the diff can't see); verdict integrity NOT guaranteed` });
+    else
+      out.push({ cls: 'integrity_note', sev: 'info',
+        msg: `${rel.split('/').pop()} differs from session start via a non-diff channel — best-effort/unsigned, shown for awareness only. Set GROUNDTRUTH_KEY (out of the agent's shell) + gate in CI for real enforcement.` });
   }
   return out;
 }
@@ -834,6 +1145,11 @@ export function intentConfidence(intent = '') {
  *  findings nested under it), and what the verdict MEANS (esp. why confidence is low). One place →
  *  terminal, .md, chat echo. */
 export function renderCard(findings, { session = 'unknown', intent = '', blockEnabled = false, baseline = null, pendingRules = 0, integrity = '' } = {}) {
+  // Quiet awareness NOTES (info-tier, e.g. an unsigned-regime coverage-gap) are pulled OUT before any finding
+  // logic: they never flip the verdict, never enter the Honesty/Integrity sections, and (via sev!==warn/block)
+  // are never injected into the next turn — they render only as a ⚪ footer.
+  const notes = (findings || []).filter(f => f.cls === 'integrity_note' || f.sev === 'info');
+  findings = (findings || []).filter(f => !(f.cls === 'integrity_note' || f.sev === 'info'));
   const SEV = { block: '🔴', warn: '🟡' };          // RAG: red = block, amber = warn, green = clean
   const _raw = (intent || '').replace(/\s+/g, ' ').trim();
   const ask = _raw ? (_raw.length > 130 ? _raw.slice(0, 130).replace(/\s\S*$/, '') + '…' : _raw) : '(no prompt captured)';
@@ -895,6 +1211,7 @@ export function renderCard(findings, { session = 'unknown', intent = '', blockEn
     `       means: ${means}`,
     ...(integrity ? integrity.split('\n').map(l => `  ${l}`) : []),
     ...(pendingRules ? [`  ⚪ ${pendingRules} rule(s) proposed from your docs await approval → /groundtruth-rules to review + arm`] : []),
+    ...notes.map(f => `  ⚪ ${f.cls === 'integrity_note' ? 'Integrity note' : 'Aside'} (awareness only, not a finding) — ${f.msg}`),
     `  ⚪ Deterministic verdict (no LLM). Semantic checks — spec-substitution, "rationalised past a rule", regression — are roadmap, not in this card.`,
   ].join('\n');
 }
@@ -1173,8 +1490,12 @@ function main() {
   // any prose mention of its filename (e.g. the transcript). So `diff` (authored changes) drives the
   // ledger / open-loops / tamper; `scanDiff` (authored + untracked + MCP) drives analyze's content checks.
   const ut = untrackedAdded(cwd, new Set(changedFiles(diff)));
-  const scanDiff = diff + ut.content
-    + (parsed.mcpSql ? `\n+++ b/<mcp-sql>\n` + parsed.mcpSql.split('\n').map((l) => '+' + l).join('\n') : '');
+  // dropExcludedFiles: the content checks (secrets/stubs/rules/phantom) never scan GT's own state or an
+  // out-of-repo throwaway (scratchpad/tmp/absolute) — those reach the scan only via the tool-ledger and are
+  // not deliverables. The ledger/open-loops keep the UNfiltered `diff` (namedDeliverables already excludes
+  // scratchpad), so this only narrows the content scanners.
+  const scanDiff = dropExcludedFiles(diff + ut.content
+    + (parsed.mcpSql ? `\n+++ b/<mcp-sql>\n` + parsed.mcpSql.split('\n').map((l) => '+' + l).join('\n') : ''));
 
   const findings = analyze({
     claim: payload.last_assistant_message || '',
@@ -1230,14 +1551,12 @@ function main() {
   let priorTasks = []; try { priorTasks = JSON.parse(readFileSync(taskFile, 'utf8')); } catch {}
   // Honor only deferrals the USER typed (`defer <id>` in a real turn) — an agent-written 'deferred',
   // in tasks.json or anywhere, is re-opened to pending. The lever an agent could forge is gone.
-  const tasks = applyConfirmedDeferrals(updateTaskLedger(priorTasks, parsed.asks || [], diff), humanDeferrals(parsed.asks || []));
+  const ledger = applyConfirmedDeferrals(updateTaskLedger(priorTasks, parsed.asks || [], diff), humanDeferrals(parsed.asks || []));
+  // Open-loop surfacing (Phase 6): nag-once + per-token done-match + tiers, via the pure surfaceOpenLoop.
+  const surfaced = ledger.map(t => surfaceOpenLoop(t, payload.last_assistant_message || ''));
+  const tasks = surfaced.map(s => s.task);                    // next-state to persist (surfaced/age/stale)
+  for (const s of surfaced) if (s.finding) findings.push(s.finding);
   try { writeFileSync(taskFile, JSON.stringify(tasks, null, 2) + '\n'); } catch {}
-  const claimsDone = COMPLETION_RE.test(payload.last_assistant_message || '');
-  for (const t of tasks.filter(x => x.status === 'pending'))
-    findings.push({ cls: 'openloop', sev: claimsDone ? 'block' : 'warn',
-      msg: `pending task [${t.id}] — "${t.task}"${t.deferRequested
-        ? ` (agent tried to defer this — only you can, by replying \`defer ${t.id}\`)`
-        : ` (no ${t.deliverable.slice(0, 2).join(' / ')} in the diff yet — or reply \`defer ${t.id}\` to set aside)`}` });
   // What remains 'deferred' here is human-confirmed (the agent can't reach this state), so it's a
   // legitimate set-aside — surfaced for transparency at warn, never silent, never blocking.
   for (const t of tasks.filter(x => x.status === 'deferred'))
@@ -1283,8 +1602,17 @@ function main() {
     writeFileSync(join(dir, `${payload.session_id || 'session'}.md`), card + '\n');
     // persist surfaceable findings so the next UserPromptSubmit (--intent) injects them into the agent's
     // context — the .md alone is read by no one in VS Code (the silent-warn gap). Overwritten every turn.
-    const surf = findings.filter(f => f.sev === 'warn' || f.sev === 'block').map(f => ({ cls: f.cls, sev: f.sev, msg: f.msg }));
+    // Inject only NON-quiet warn/block findings: nag-once means a hard task already surfaced in a prior turn
+    // still shows on the card (f.quiet stays in `findings`) but is NOT re-injected into the agent's context.
+    const surf = findings.filter(f => (f.sev === 'warn' || f.sev === 'block') && !f.quiet).map(f => ({ cls: f.cls, sev: f.sev, msg: f.msg }));
     writeFileSync(join(dir, `${payload.session_id || 'session'}.findings.json`), JSON.stringify(surf));
+    // cumulative history — one line per turn, never overwritten (weekly harvest)
+    try {
+      const rec = { ts: new Date().toISOString(), session: payload.session_id || 'session',
+        verdict: findings.some(f => f.sev === 'block') ? 'block' : findings.length ? 'warn' : 'clean',
+        findings: surf };
+      writeFileSync(join(dir, 'history.jsonl'), JSON.stringify(rec) + '\n', { flag: 'a' });
+    } catch {}
   } catch { /* non-fatal */ }
 
   process.stderr.write('\n' + card + '\n');
