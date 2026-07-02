@@ -125,6 +125,12 @@ Each step unlocks the next. You can stop at any stage and still get value.
    This alone enables the hooks. Restart Claude Code so they register — from here **every agent turn
    already gets a warn-only verdict card** (honesty, completeness, security), with no further config.
 
+   > **Updating:** `/plugin marketplace update groundtruth` refreshes the catalog (downloads the new version
+   > into the cache) but does **not** move the *installed* pin, and a restart reloads the old pin — so the
+   > verdict hook keeps running the stale engine, silently. Run `/plugin update groundtruth` (or reinstall)
+   > **and restart** so the new engine actually loads; confirm `installed_plugins.json` shows the new version.
+   > The status badge surfaces this for you: it shows `⬆<version>` when a newer version is cached but not yet pinned.
+
 2. **Set up visibility** (once) — `/groundtruth-setup`
    A checker, not a switch. The engine is already on from step 1; this detects what's left and hands you
    the exact paste-in for the two things a plugin *can't* set itself: the **status badge** (how you see
