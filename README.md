@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/deterministic-no%20LLM%20%C2%B7%20no%20network%20%C2%B7%20no%20API%20key-111111?style=flat-square" alt="Deterministic: no LLM, no network, no API key">
   <img src="https://img.shields.io/badge/runs%20on-Claude%20Code-111111?style=flat-square" alt="Runs on Claude Code">
   <img src="https://img.shields.io/github/v/release/akahkhanna/groundtruth?style=flat-square&color=111111&label=release" alt="Release">
-  <img src="https://img.shields.io/badge/self--checks-309%20%C2%B7%20red--team%2012%2F12-111111?style=flat-square" alt="309 self-checks, red-team 12/12">
+  <img src="https://img.shields.io/badge/self--checks-362%20%C2%B7%20red--team%2014%2F14-111111?style=flat-square" alt="362 self-checks, red-team 14/14">
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT license">
 </p>
 
@@ -27,6 +27,51 @@ against what actually changed. He says little. When he catches your agent mid-&l
 is the whole point:
 
 <p align="center"><strong>&ldquo;&hellip;what the nerd.&rdquo;</strong></p>
+
+## How to use it — the whole flow
+
+Each step unlocks the next. You can stop at any stage and still get value.
+
+1. **Install** (once) — from inside Claude Code:
+   ```
+   /plugin marketplace add akahkhanna/groundtruth
+   /plugin install groundtruth@groundtruth
+   ```
+   This alone enables the hooks. Restart Claude Code so they register — from here **every agent turn
+   already gets a warn-only verdict card** (honesty, completeness, security), with no further config.
+
+   > **Updating:** `/plugin marketplace update groundtruth` refreshes the catalog (downloads the new version
+   > into the cache) but does **not** move the *installed* pin, and a restart reloads the old pin — so the
+   > verdict hook keeps running the stale engine, silently. Run `/plugin update groundtruth` (or reinstall)
+   > **and restart** so the new engine actually loads; confirm `installed_plugins.json` shows the new version.
+   > The status badge surfaces this for you: it shows `⬆<version>` when a newer version is cached but not yet pinned.
+
+2. **Set up visibility** (once) — `/groundtruth-setup`
+   A checker, not a switch. The engine is already on from step 1; this detects what's left and hands you
+   the exact paste-in for the two things a plugin *can't* set itself: the **status badge** (how you see
+   the card in the VS Code extension) and env vars. It changes no setting on its own.
+
+3. **See it on your code right now** (optional) — `/groundtruth-audit`
+   A one-off inventory of existing stubs / TODOs / phantom imports (plus any exposed `.env`). Findings,
+   not a verdict.
+
+4. **Arm your project rules**  ← this is what turns on the **Told & Ignored** bucket
+   ```
+   /groundtruth-rules-ai            # optional: a model pass proposing richer rules from your docs
+   /groundtruth-rules approve-all   # REQUIRED to enforce — arms every *clean* rule; nothing arms until you run it
+   ```
+   On session start Groundtruth already read your docs (`CLAUDE.md`, `SCHEMA.md`, your skills, …) and
+   **proposed** deterministic rules. `approve-all` arms the clean ones (zero existing-code hits); or run
+   `/groundtruth-rules` bare to review and name specific ids. It's a permission gate, not automatic.
+
+5. **Enforce, once you trust the precision** — `/groundtruth-block on`
+   (or set `GROUNDTRUTH_BLOCK=1` in `.claude/settings.local.json` — the un-disablable anchor). A
+   block-severity finding then refuses the stop and hands the gap back, re-checking the fix for up to
+   **2 attempts** before escalating to a human (never wedges). Until you do this, findings warn but never block.
+
+Prefer to try it without installing? `git clone https://github.com/akahkhanna/groundtruth && claude --plugin-dir ./groundtruth`.
+
+Requires: Claude Code, `node` ≥18, and a git repo (reality = `git diff HEAD`).
 
 ## Before / after
 
@@ -81,7 +126,8 @@ could see. Groundtruth catches it because the auditor never did the work, so it 
 A verifier is only worth trusting if it's honest about its own misses, so here's the real state, not a marketing number.
 
 - **The precision was rebuilt against real data, not intuition.** We read every finding Groundtruth emitted across **14 of its own recent sessions** — **22 findings, 73% of them false positives** — and froze those into a labeled [corpus](hooks/corpus.fixture.json) (reproduce with [`node benchmarks/corpus-precision.mjs`](benchmarks/)). Then two independent adversarial review passes tried to break the fixes and built their own executable test cases.
-- **Dogfood result:** running Groundtruth's audit on its own source, self-match false positives in the engine went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 309**, red-team **12/12**.
+- **Dogfood result:** running Groundtruth's audit on its own source, self-match false positives in the engine went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 362**, red-team **14/14**.
+- **Class 6 (dropped symbol) was built precision-first, adversarially.** A "refactor" that silently drops a method is caught only by its *consequence* — a call that no longer resolves — never by guessing rename intent, so a rename/merge/casing-change with callers updated stays **silent** and only a genuinely dangling reference fires (quoting the callsite). Two review passes drove it from a naive "defined-nowhere" check (which false-fired on every rename) to a receiver-gated dangling-call test; the TypeScript-signature and spaced-path (`%20`) holes they found are fixed and pinned by fixtures. It runs across the whole ladder: **warn** on Stop + pre-commit, **block** in CI.
 - **Every fix is catalogued** with symptom → root cause → fix → regression test in **[FIXES.md](FIXES.md)** — including the two *critical* holes review found (a live secret demote-able by an adjacent comment; the agent demoting its own task by naming the file in its reply), and the residual deterministic-NL limits it does **not** fully close.
 - **Still pending (named, not hidden):** a live before/after **false-positive rate across a week of real sessions** — Groundtruth ships an append-only history log + a `gt-harvest` reader so you can measure it on *your* repo. That headline number is the next measurement, and it will be published the same way: with its misses.
 
@@ -113,51 +159,6 @@ GROUNDTRUTH · Tier-1 · demo1a2b
   ⚪ Deterministic verdict (no LLM). Semantic checks — spec-substitution, "rationalised past a rule", regression — are roadmap, not in this card.
 ```
 
-## How to use it — the whole flow
-
-Each step unlocks the next. You can stop at any stage and still get value.
-
-1. **Install** (once) — from inside Claude Code:
-   ```
-   /plugin marketplace add akahkhanna/groundtruth
-   /plugin install groundtruth@groundtruth
-   ```
-   This alone enables the hooks. Restart Claude Code so they register — from here **every agent turn
-   already gets a warn-only verdict card** (honesty, completeness, security), with no further config.
-
-   > **Updating:** `/plugin marketplace update groundtruth` refreshes the catalog (downloads the new version
-   > into the cache) but does **not** move the *installed* pin, and a restart reloads the old pin — so the
-   > verdict hook keeps running the stale engine, silently. Run `/plugin update groundtruth` (or reinstall)
-   > **and restart** so the new engine actually loads; confirm `installed_plugins.json` shows the new version.
-   > The status badge surfaces this for you: it shows `⬆<version>` when a newer version is cached but not yet pinned.
-
-2. **Set up visibility** (once) — `/groundtruth-setup`
-   A checker, not a switch. The engine is already on from step 1; this detects what's left and hands you
-   the exact paste-in for the two things a plugin *can't* set itself: the **status badge** (how you see
-   the card in the VS Code extension) and env vars. It changes no setting on its own.
-
-3. **See it on your code right now** (optional) — `/groundtruth-audit`
-   A one-off inventory of existing stubs / TODOs / phantom imports (plus any exposed `.env`). Findings,
-   not a verdict.
-
-4. **Arm your project rules**  ← this is what turns on the **Told & Ignored** bucket
-   ```
-   /groundtruth-rules-ai            # optional: a model pass proposing richer rules from your docs
-   /groundtruth-rules approve-all   # REQUIRED to enforce — arms every *clean* rule; nothing arms until you run it
-   ```
-   On session start Groundtruth already read your docs (`CLAUDE.md`, `SCHEMA.md`, your skills, …) and
-   **proposed** deterministic rules. `approve-all` arms the clean ones (zero existing-code hits); or run
-   `/groundtruth-rules` bare to review and name specific ids. It's a permission gate, not automatic.
-
-5. **Enforce, once you trust the precision** — `/groundtruth-block on`
-   (or set `GROUNDTRUTH_BLOCK=1` in `.claude/settings.local.json` — the un-disablable anchor). A
-   block-severity finding then refuses the stop and hands the gap back, re-checking the fix for up to
-   **2 attempts** before escalating to a human (never wedges). Until you do this, findings warn but never block.
-
-Prefer to try it without installing? `git clone https://github.com/akahkhanna/groundtruth && claude --plugin-dir ./groundtruth`.
-
-Requires: Claude Code, `node` ≥18, and a git repo (reality = `git diff HEAD`).
-
 ## Commands
 
 | Command | What it does |
@@ -171,7 +172,15 @@ Requires: Claude Code, `node` ≥18, and a git repo (reality = `git diff HEAD`).
 | `/groundtruth-help` | What Groundtruth checks, and its commands. |
 
 CLI (no install needed): `node hooks/groundtruth.mjs --audit` runs the repo audit; `--latest` prints the
-most recent verdict card.
+most recent verdict card; `--install-pre-commit` wires a `.git/hooks/pre-commit` staged-diff scan
+(fail-open, won't clobber a foreign hook); `--diff-range origin/main..HEAD` is the **CI/pre-merge gate**
+(exits non-zero on a block-severity finding or a dropped-symbol dangling ref).
+
+**Three enforcement rungs, one engine** — each catches what the last can't: **Stop** (Claude Code drives
+the edit → a rich per-turn card, warn) → **pre-commit** (any author, incl. code *pasted from a chat* that
+no Stop hook ever saw → warn at `git commit`) → **CI** (`--diff-range`, bypass-proof → **block** the PR).
+Dropped-symbol dangling refs ride all three; a copy-paste hook installer + a ready GitHub Action
+([`.github/workflows/groundtruth.yml`](.github/workflows/groundtruth.yml)) make the outer two one command each.
 
 ## How it works
 
@@ -186,7 +195,9 @@ reads the claim from the Stop payload, intent + Bash evidence from the transcrip
 - **Honesty** — 1 false test/build claim ("tests pass" with no test run, or a failing run) · 2 stub/
   placeholder (`TODO`/`FIXME`/`NotImplemented`/`pass`/Rust `todo!()`/Go `panic("…")`/…) · 3 silent no-op
   (claimed a change to a file absent from the diff) · 4 phantom ref (a new relative import whose target
-  doesn't exist) · 9 special-casing (non-test code that branches on test/CI/the auditor).
+  doesn't exist) · 6 dropped symbol (a function/method the diff removed, defined nowhere in the tree yet
+  still **called** — a dangling reference under a "refactor / everything preserved" claim; quotes the dead
+  callsite) · 9 special-casing (non-test code that branches on test/CI/the auditor).
 - **Completeness** (scope-miss) — a named deliverable in the ask that never lands in the diff (the
   open-loop / task ledger; name-matching, deliberately crude — it abstains when the ask names nothing).
   It also abstains when the turn is an **observation or question rather than a request** ("I can see a 304,
@@ -361,8 +372,8 @@ non-adversarial use only.
 ## Tests
 
 ```bash
-node hooks/groundtruth.test.mjs   # 237 assert-based unit checks, no deps
-node hooks/redteam.mjs            # LIVE adversarial harness (9 scenarios, 12 checks) — sandboxed, exits non-zero if a rail fell
+node hooks/groundtruth.test.mjs   # 362 assert-based unit checks, no deps
+node hooks/redteam.mjs            # LIVE adversarial harness (10 scenarios, 14 checks) — sandboxed, exits non-zero if a rail fell
 ```
 
 The red-team harness is the *proven* (not asserted) counterpart: it spins up a throwaway git repo, hands the
@@ -379,7 +390,7 @@ radius is contained: fake key, temp repo, auto-removed; it never touches a real 
 
 ## Status
 
-Built: Audit mode + per-turn verify-on-Stop, all **deterministic (no LLM)** — honesty classes 1–4 + 9,
+Built: Audit mode + per-turn verify-on-Stop, all **deterministic (no LLM)** — honesty classes 1–4 + 6 + 9,
 completeness (scope-miss), directive-override via doc-compiled rules behind an approval gate, the
 remediation loop + anti-gaming (block → corrective handback → re-check, capped at 2 → escalate), baseline
 diffing, the pre-flight intent check, plus the security checks. The semantic/LLM layer (spec-substitution,

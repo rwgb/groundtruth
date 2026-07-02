@@ -5,7 +5,7 @@
  *
  * Audits the just-finished turn artifact-against-contract and renders a verdict
  * card. ALL checks are deterministic — no LLM, no network, no agent hook:
- *   honesty    1 false test/build claim · 2 stub/placeholder · 3 silent no-op · 4 phantom ref · 9 special-casing
+ *   honesty    1 false test/build claim · 2 stub/placeholder · 3 silent no-op · 4 phantom ref · 6 dropped symbol (dangling ref) · 9 special-casing
  *   complete.  5 scope-miss — a named deliverable absent from the diff (open-loop / task ledger)
  *   rules      7 directive-override — your docs compiled into deterministic predicates + enforced
  *   security   hardcoded secrets · RLS-off / anon-readable policy · committed .env
@@ -25,17 +25,22 @@
  *
  * Pure `analyze()` + `parseTranscript()` are exported for groundtruth.test.mjs.
  */
-import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync, chmodSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';   // NOT `new URL(...).pathname` — that percent-encodes spaces (`john doe`→`john%20doe`), silently inerting every path-derived check on a spaced/Windows/cloud-synced install
+// Class 6 lives in its own module (this engine is already large). The import is a deliberate cycle
+// (symbol-integrity.mjs re-imports the pure lexers below) — safe because every cross-reference is at
+// call time, never at module-eval time.
+import { checkDroppedSymbols } from './symbol-integrity.mjs';
 
 const CLASS_NAME = { 1: 'false test/build claim', 2: 'stub/placeholder', 3: 'silent no-op', 4: 'phantom ref',
-  9: 'special-casing / overfit', async_done: 'false completion (async)',
+  6: 'dropped symbol (dangling ref)', 9: 'special-casing / overfit', async_done: 'false completion (async)',
   B1: 'RLS off on new table', B3: 'permissive policy (anon-readable)', C1: 'hardcoded secret', C2: 'private key',
   R: 'compiled rule (from your docs)', openloop: 'open loop (asked, not delivered)', P: 'procedure (step skipped / out of order)',
   ENV: 'env file not gitignored (secret-leak risk)' };
-const CLASS_BUCKET = { 1: 'Ignored', 2: 'Missed→Ignored', 3: 'Ignored', 4: 'Missed', async_done: 'Ignored',
+const CLASS_BUCKET = { 1: 'Ignored', 2: 'Missed→Ignored', 3: 'Ignored', 4: 'Missed', 6: 'Missed→Ignored', async_done: 'Ignored',
   B1: 'Ignored', B3: 'Ignored', C1: 'Ignored', C2: 'Ignored', R: 'Ignored' };
 
 // Phase-1 false-completion (async): the claim asserts done/clean AND simultaneously says the work is
@@ -69,18 +74,18 @@ const ONLY_STUB_LINE_RE = /^\s*pass\s*$/;                          // a Python b
 // QUOTE is a MENTION, not debt — that is the self-match FP class (GT flagging its own `STUB_MARKER_RE = /…TODO…/`
 // and a `// TODO` quoted inside a demo card). See stubMarkerInComment. (Fable: "firing was cheaper than lexing"
 // — fix it once at the shared match layer.)
-const extOf = (p) => (String(p).match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
+export const extOf = (p) => (String(p).match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
 const C_STYLE = new Set('js ts mjs cjs jsx tsx go rs java kt kts c cc cpp cxx h hpp cs swift scala php dart m mm vue svelte'.split(' '));
 const HASH    = new Set('py rb sh bash yaml yml toml ex exs'.split(' '));
 const DASH    = new Set('sql lua'.split(' '));
 // Blank string literals so a `//`/`#` INSIDE a string ("http://…") isn't mistaken for a comment opener.
 // Regex literals need no blanking — they carry no comment opener. Length-preserving (indices stay aligned).
-const blankStrings = (s) => s.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => ' '.repeat(m.length));
+export const blankStrings = (s) => s.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, m => ' '.repeat(m.length));
 // Split a source line into { code, comment }. `state` (mutated) threads block-comment (`/* */`) across
 // lines — exact in full-file audit, best-effort on a diff (an opener on a prior UNCHANGED line can slip;
 // documented limit, not silent). String literals are blanked only to FIND the opener, so the returned
 // slices keep original text.
-function splitCodeComment(rawLine, ext, state) {
+export function splitCodeComment(rawLine, ext, state) {
   const cat = C_STYLE.has(ext) ? 'c' : HASH.has(ext) ? 'h' : DASH.has(ext) ? 'd' : 'x';
   const blanked = blankStrings(rawLine);
   if (state.block) {                                                    // inside an open /* … */
@@ -171,7 +176,7 @@ const TEST_FAIL_RE = /\b\d+\s+(?:failing|failed|failures?)\b|\bAssertionError\b|
 // Test/spec files across languages — JS (.test./.spec.), Go (_test.go), Python (test_*.py / *_test.py),
 // Ruby (*_spec.rb), Elixir (*_test.exs), plus conventional dirs (tests/, __tests__/, spec/, src/test/).
 // Drives the Class-1 "whole diff is tests" anti-gaming warn AND the remediation gaming guard (GAMED_FILE_RE).
-const TEST_FILE_RE = /\.test\.|\.spec\.|_test\.(?:go|py|rb|exs?|java|kt|cc|cpp|c)\b|(^|\/)test_[^/]*\.py\b|_spec\.rb\b|(^|\/)(?:tests?|__tests__|spec)\/|(^|\/)src\/test\//i;
+export const TEST_FILE_RE = /\.test\.|\.spec\.|_test\.(?:go|py|rb|exs?|java|kt|cc|cpp|c)\b|(^|\/)test_[^/]*\.py\b|_spec\.rb\b|(^|\/)(?:tests?|__tests__|spec)\/|(^|\/)src\/test\//i;
 // Class 9 — special-casing the evaluator (RHB "overfit-to-visible-check"): source that detects it's under
 // test/CI/audit so it can behave differently. High-confidence: gaming Groundtruth itself (reads the plugin's
 // own env vars, or writes one of its suppression tokens into source). Heuristic: a test/CI env probe in
@@ -1158,7 +1163,7 @@ export function renderCard(findings, { session = 'unknown', intent = '', blockEn
   const hasAsync = findings.some(f => f.cls === 'async_done');     // false-completion: claimed done, work unfinished
   const dot = hasBlock ? '🔴' : hasAsync ? '⏳' : (findings.length || ic.tier === 'thin') ? '🟡' : '🟢';
 
-  const isHonesty = f => [1, 2, 3, 4, 9, 'async_done'].includes(f.cls);      // false-claim / stub / no-op / phantom / special-casing / false-completion
+  const isHonesty = f => [1, 2, 3, 4, 6, 9, 'async_done'].includes(f.cls);   // false-claim / stub / no-op / phantom / dangling-ref / special-casing / false-completion
   const sortF = a => [...a].sort((x, y) => (x.sev === 'block' ? 0 : 1) - (y.sev === 'block' ? 0 : 1));
   const sub = f => `       ${SEV[f.sev]} ${CLASS_NAME[f.cls] || f.cls} — ${f.msg}`;
   const hon = findings.filter(isHonesty);
@@ -1252,6 +1257,7 @@ const FIX = {
   2: 'Implement the stub body — remove the TODO / placeholder / not-implemented.',
   3: 'Actually make the change you claimed (the named file/symbol is absent from the diff), or correct the claim.',
   4: 'Fix the import — the referenced module/symbol does not resolve in the tree.',
+  6: 'Restore or relocate the removed function/method (its name is defined nowhere in the tree), or update the quoted dangling caller(s). If the removal was intended, fix the callers — a preservation claim over a broken call is the finding.',
   B1: 'Add `ALTER TABLE … ENABLE ROW LEVEL SECURITY` for the new table, in the SAME migration.',
   B3: 'Remove (or scope with auth.uid()) the `TO public/anon … USING(true)` policy — it exposes every row.',
   C1: 'Remove the hardcoded secret; move it to an env var / secret store and rotate it.',
@@ -1309,7 +1315,7 @@ export function priorFindingsContext(findings = []) {
 // forms (NO LLM). Returns the proposed count. Shared by SessionStart (init-at-load) and --watch-rules
 // (mid-session, when a rule doc is edited); clears the rules.dirty marker. Caller wraps in try (fail-open).
 function recompileRules(cwd) {
-  const here = dirname(new URL(import.meta.url).pathname);
+  const here = dirname(fileURLToPath(import.meta.url));
   const out = execSync(`node ${JSON.stringify(join(here, 'compile-rules.mjs'))} ${JSON.stringify(cwd)}`,
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   try { rmSync(join(cwd, '.claude', 'groundtruth', 'rules.dirty'), { force: true }); } catch {}
@@ -1325,10 +1331,59 @@ export function proposedStale(proposedMtime, srcMtimes = []) {
   return srcMtimes.some(m => m != null && m > proposedMtime);
 }
 
+// The `.git/hooks/pre-commit` body `--install-pre-commit` writes. Pure + exported so its invariants are
+// regression-tested. `gtPath` is a DECODED absolute path (fileURLToPath, not %20-encoded). Single-quoted
+// so a space / `"` / `$` in the path can't break or inject. Fail-OPEN twice — missing `node` (GUI git
+// clients run hooks with a minimal PATH: exit 127 would BLOCK every commit) and missing script (stale
+// path after a plugin update) each `exit 0` with a stderr breadcrumb, never a silent-inert or a wedge.
+export function preCommitHookScript(gtPath, marker = 'groundtruth-pre-commit') {
+  const q = "'" + String(gtPath).replace(/'/g, `'\\''`) + "'";
+  return `#!/bin/sh\n# ${marker} (auto-installed — re-run \`--install-pre-commit\` after a plugin update if the path moves)\n`
+    + `GT=${q}\n`
+    + `command -v node >/dev/null 2>&1 || { echo "groundtruth: node not on PATH — skipping pre-commit scan" >&2; exit 0; }\n`
+    + `[ -f "$GT" ] || { echo "groundtruth: hook script missing ($GT) — skipping; re-run --install-pre-commit" >&2; exit 0; }\n`
+    + `exec node "$GT" --pre-commit\n`;
+}
+
+// Parse+VALIDATE a `--diff-range` arg. The range reaches `git` via execSync, so it must be a safe ref
+// token — reject anything with a shell metachar (`;`, `$(…)`, spaces, quotes). Returns { ok, range, head }
+// where head = the tip to grep (the segment after `..`/`...`, else HEAD). Exported for the injection test.
+export function parseDiffRange(range) {
+  const r = String(range || '').trim();
+  if (!/^[\w./~^@+-]+(?:\.\.\.?[\w./~^@+-]*)?$/.test(r)) return { ok: false };
+  const parts = r.split(/\.\.\.?/);                       // `abc..` → ['abc','']; `..def` → ['','def']
+  if (parts.some(s => s.startsWith('-'))) return { ok: false };   // a `-`-leading segment is an arg-injection (`--ext-diff`), never a legit ref — reject at the boundary, not incidentally at the resolve-guard
+  const head = r.includes('..') ? (parts[parts.length - 1] || 'HEAD') : 'HEAD';
+  return { ok: true, range: r, head };
+}
+
 function main() {
   const git = (args, cwd) => {
     try { return execSync(`git ${args}`, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
     catch { return ''; }
+  };
+  // Shared searcher for the Class-6 dangling-ref check (used by BOTH the Stop path and the pre-commit
+  // path). `-E` POSIX ERE (not `-P` — PCRE isn't guaranteed, and a `-P` error would throw → fail-open →
+  // silently inert; the real receiver-gated classification is done in JS). It MUST distinguish `git grep`'s
+  // exit-1 (clean no-match → '') from a real error (throw → checkDroppedSymbols fails open) — else every
+  // no-match reads as "grep unavailable" and the check goes silently inert. Names regex- and shell-escaped.
+  const mkGrepTree = (cwd, { cached = false, tree = null } = {}) => (names) => {
+    if (!names.length) return '';
+    const pat = '(' + names.map(n => String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
+    const arg = "'" + pat.replace(/'/g, `'\\''`) + "'";
+    // Grep what each surface actually ships: Stop → WORKING TREE (`--untracked`, sees new-file callers);
+    // pre-commit → INDEX (`--cached`, exactly what's committed); CI → a specific TREE-ISH (the PR head,
+    // what actually merges). `git grep <tree>` takes neither flag. `tree` is a pre-validated safe ref token.
+    const cmd = tree
+      ? `git grep -I -n -E -e ${arg} ${tree}`
+      : `git grep -I -n ${cached ? '--cached' : '--untracked'} -E -e ${arg}`;
+    try {
+      const out = execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // `git grep <tree>` prefixes every hit `<tree>:path:line:…`. Strip it so classifyHits sees a clean
+      // repo-relative path — otherwise the path-PREFIX filters (excludedScanPath / NOISE_PATH `(^|/)dist/`)
+      // silently miss (`HEAD:dist/…` has no leading `/`), a false-fire in CI, and the quoted loc is ugly.
+      return tree ? out.split('\n').map(l => l.startsWith(tree + ':') ? l.slice(tree.length + 1) : l).join('\n') : out;
+    } catch (e) { if (e.status === 1) return ''; throw e; }
   };
 
   // PostToolUse[Edit|Write] (`--watch-rules`): when a rule-source file (CLAUDE.md / a SKILL.md /
@@ -1365,13 +1420,17 @@ function main() {
   // Pre-commit gate (`--pre-commit`, installed as .git/hooks/pre-commit): scan the STAGED diff and
   // surface findings in the terminal BEFORE the commit lands. Unlike Stop (warn-only), this HALTS the
   // commit on block-severity findings (a secret, an RLS-off table, a permissive policy) — the things
-  // you must never commit. No agent claim here, so claim-based checks (1/3) naturally don't fire.
+  // you must never commit. No agent claim here, so claim-based checks (1/3) naturally don't fire — BUT
+  // the Class-6 dangling-ref check runs GATE-FREE (requireClaim:false): a call left resolving to nothing
+  // is a broken build regardless of intent, and this is the ONLY hook that sees code PASTED in from a
+  // chat (no Stop hook ever fired for a manual paste), so the commit is where it gets caught.
   if (process.argv.includes('--pre-commit')) {
     const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const diff = git('diff --cached', cwd);
     if (!diff.trim()) process.exit(0);
     const findings = analyze({ claim: '', diff, cwd }).concat(runCompiledRules(diff, loadCompiledRules(cwd)))
-      .concat(collectEnv((a) => git(a, cwd)));
+      .concat(collectEnv((a) => git(a, cwd)))
+      .concat(checkDroppedSymbols({ claim: '', diff, asks: [], grepTree: mkGrepTree(cwd, { cached: true }), requireClaim: false }));
     if (!findings.length) { process.stderr.write('🟢 Groundtruth: staged diff clean.\n'); process.exit(0); }
     const SEV = { block: '🔴', warn: '🟡' };
     const sorted = [...findings].sort((a, b) => (a.sev === 'block' ? 0 : 1) - (b.sev === 'block' ? 0 : 1));
@@ -1382,6 +1441,81 @@ function main() {
       process.exit(1);
     }
     process.exit(0);
+  }
+
+  // CI / pre-merge gate (`--diff-range <base>..<head>`): the REAL enforcement boundary (the tool's docs
+  // name CI as such — pre-commit is bypassable with `--no-verify` or never installed). Scans a PR range and
+  // EXITS NON-ZERO on any block-severity finding OR a Class-6 dangling ref, so the ladder is warn locally
+  // (Stop / pre-commit) → BLOCK in the PR, where a human overrides by review, not a solo `--no-verify`.
+  // Greps the HEAD tree (what actually merges), no agent claim (Class 6 runs gate-free).
+  if (process.argv.includes('--diff-range') || process.argv.some(a => a.startsWith('--diff-range='))) {
+    const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const eq = process.argv.find(a => a.startsWith('--diff-range='));
+    const raw = eq ? eq.slice('--diff-range='.length) : (process.argv[process.argv.indexOf('--diff-range') + 1] || '');
+    const dr = parseDiffRange(raw);
+    if (!dr.ok) { process.stderr.write('✗ --diff-range needs a safe git range, e.g. `--diff-range origin/main..HEAD`\n'); process.exit(2); }
+    // Silent-inertness guard: a SHALLOW CI checkout (actions/checkout defaults to fetch-depth:1) lacks the
+    // base ref → `git diff` errors → the `git` helper swallows it → empty diff → a silent PASS on a broken
+    // PR. Verify every endpoint resolves and FAIL LOUD if not (the tool forbids silently inert self).
+    for (const ref of dr.range.split(/\.\.\.?/).filter(Boolean)) {
+      if (!git(`rev-parse --verify --quiet ${ref}`, cwd).trim()) {
+        process.stderr.write(`✗ Ref '${ref}' not found — check out full history in CI (actions/checkout with \`fetch-depth: 0\`). Refusing to scan: an empty diff would silently pass.\n`);
+        process.exit(2);
+      }
+    }
+    // Three-dot `A...B` diffs from the MERGE-BASE; unrelated histories (orphan/grafted branches) have none →
+    // `git diff A...B` errors → swallowed → empty → silent pass (same sin, different cause). Verify it exists.
+    if (dr.range.includes('...')) {
+      const [a, b] = dr.range.split('...');
+      if (a && b && !git(`merge-base ${a} ${b}`, cwd).trim()) {
+        process.stderr.write(`✗ No common ancestor for '${dr.range}' (unrelated histories) — a 3-dot diff can't be computed. Use 2-dot \`${a}..${b}\`, or check out full history.\n`);
+        process.exit(2);
+      }
+    }
+    const diff = git(`diff ${dr.range}`, cwd);
+    const findings = analyze({ claim: '', diff, cwd }).concat(runCompiledRules(diff, loadCompiledRules(cwd)))
+      .concat(checkDroppedSymbols({ claim: '', diff, asks: [], grepTree: mkGrepTree(cwd, { tree: dr.head }), requireClaim: false }));
+    if (!findings.length) { process.stderr.write(`🟢 Groundtruth: ${dr.range} clean.\n`); process.exit(0); }
+    const SEV = { block: '🔴', warn: '🟡' };
+    const fail = findings.filter(f => f.sev === 'block' || f.cls === 6);          // the PR-blocking set
+    const sorted = [...findings].sort((a, b) => (fail.includes(b) ? 1 : 0) - (fail.includes(a) ? 1 : 0));
+    // Marker matches the DECISION: a Class-6 finding is `sev:'warn'` but blocks in CI → render it 🔴, not 🟡.
+    process.stderr.write(`\nGroundtruth — ${dr.range}:\n` + sorted.map(f => `  ${fail.includes(f) ? '🔴' : SEV[f.sev]} [${CLASS_NAME[f.cls] || f.cls}] ${f.msg}`).join('\n') + '\n');
+    if (fail.length) {
+      process.stderr.write(`\n🔴 ${fail.length} PR-blocking finding(s) (secrets / RLS / dropped-symbol dangling refs) — CI failed. Fix them, or a reviewer can override by merging.\n`);
+      process.exit(1);
+    }
+    process.stderr.write(`\n🟡 ${findings.length} advisory finding(s) — not blocking.\n`);
+    process.exit(0);
+  }
+
+  // `--install-pre-commit`: write `.git/hooks/pre-commit` so the STAGED-diff scan runs on every `git
+  // commit` — the ONLY hook that sees code an agent didn't author (a manual paste from a chat, a
+  // hand-edit). The generated hook is fail-open (skips if groundtruth has moved/uninstalled — a stale
+  // path must never block commits) and NON-clobbering (won't overwrite a foreign pre-commit hook).
+  if (process.argv.includes('--install-pre-commit')) {
+    const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const top = git('rev-parse --show-toplevel', cwd).trim();
+    if (!top) { process.stderr.write('✗ Not a git repository — nothing to install.\n'); process.exit(1); }
+    // `git rev-parse --git-path hooks` resolves the hooks dir in EVERY layout — normal repo, a worktree
+    // (where `.git` is a FILE, so `.git/hooks` doesn't exist), and a custom `core.hooksPath`. Hand-rolling
+    // `.git/hooks` is wrong in a worktree. Resolve against cwd (git may return a relative path).
+    const hooksDir = resolve(cwd, git('rev-parse --git-path hooks', cwd).trim() || join(top, '.git', 'hooks'));
+    const target = join(hooksDir, 'pre-commit');
+    const self = fileURLToPath(import.meta.url);                            // abs path of THIS groundtruth.mjs (decoded)
+    const MARK = 'groundtruth-pre-commit';
+    if (existsSync(target) && !readFileSync(target, 'utf8').includes(MARK)) {
+      process.stderr.write(`✗ A pre-commit hook already exists and is not Groundtruth's:\n    ${target}\n  Not overwriting. To enable the staged scan, add this line to it:\n    node "${self}" --pre-commit\n`);
+      process.exit(1);
+    }
+    const script = preCommitHookScript(self, MARK);
+    try {
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(target, script);
+      chmodSync(target, 0o755);
+      process.stderr.write(`✓ Installed Groundtruth pre-commit hook → ${target}\n  Scans the STAGED diff on every commit (secrets · RLS · stubs · dropped-symbol dangling refs), halting only on block-severity findings. Bypass once with \`git commit --no-verify\`.\n`);
+      process.exit(0);
+    } catch (e) { process.stderr.write(`✗ Could not write ${target}: ${e.message}\n`); process.exit(1); }
   }
 
   // UserPromptSubmit (`--intent`): §7 pre-flight — warn the user when the prompt is too thin to
@@ -1509,6 +1643,11 @@ function main() {
 
   // §10: also evaluate the deterministic rules compiled from this repo's own docs (CLAUDE.md/skills).
   findings.push(...runCompiledRules(scanDiff, loadCompiledRules(cwd)));
+
+  // Class 6 — a dropped symbol left dangling under a preservation claim (symbol-integrity.mjs). Claim-gated
+  // here (the Stop-hook honesty run); the pre-commit path runs it gate-free. `scanDiff` (not `diff`) so a
+  // Bash-moved def is seen; grep searcher is the shared `mkGrepTree` (exit-1→'' vs throw→fail-open).
+  findings.push(...checkDroppedSymbols({ claim: payload.last_assistant_message || '', diff: scanDiff, asks: parsed.asks || [], grepTree: mkGrepTree(cwd) }));
 
   // §11: tamper-evidence — did THIS turn rewrite the referee's own ground truth (rules/config/ledger)?
   // Severity anchors to ENV block authority, never to config.json (which the agent may have just
@@ -1650,4 +1789,4 @@ function main() {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (fileURLToPath(import.meta.url) === process.argv[1]) main();

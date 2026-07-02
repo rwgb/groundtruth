@@ -14,12 +14,16 @@ Tracks `groundtruth-architecture.md` **v0.4**. What's built, and what's left to 
   findings-not-a-verdict. The doc's "cheapest first ship."
 - **Verify mode** — one deterministic `Stop` hook (`type:"command"`, no LLM, no network). (An LLM
   "Tier-2" judgment hook was prototyped and cut — the shipped engine is fully deterministic.)
-- **Honesty classes 1–4 + 9**: false test/build claim (incl. the *test-edited-to-pass* signal),
-  stub/placeholder, silent no-op, phantom ref, special-casing/overfit.
+- **Honesty classes 1–4 + 6 + 9**: false test/build claim (incl. the *test-edited-to-pass* signal),
+  stub/placeholder, silent no-op, phantom ref, **dropped symbol (dangling reference under a
+  refactor/preservation claim — deterministic, receiver-gated; warn on Stop/pre-commit, block in CI)**,
+  special-casing/overfit.
 - **Completeness (5 scope-miss)** — a named deliverable absent from the diff (open-loop / task ledger;
   deliberately crude name-matching). **Directive-override (7)** — your docs compiled into deterministic
   predicates + enforced (the differentiator, delivered without an LLM). NOT shipped (these need the
-  semantic/LLM layer): 6 spec-substitution, 8 regression-blind, and the *semantic* versions of 5/7.
+  semantic/LLM layer): spec-substitution, 8 regression-blind, and the *semantic* versions of 5/7.
+  (Class 6 was reserved for spec-substitution but is now shipped as the deterministic dropped-symbol
+  check above; the semantic spec-substitution idea remains unshipped and unnumbered.)
 - **Class 9 — special-casing / overfit (v0.6, warn-only)**: non-test source that detects it's under
   test/CI/audit (gaming Groundtruth's own env, or a CI/test env branch). Deterministic core only;
   **deferred** (named, not half-built): 9c hardcoded-answer-lifted-from-a-test → the LLM layer; 9d

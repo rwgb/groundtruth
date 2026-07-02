@@ -10,8 +10,9 @@ import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } f
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop } from './groundtruth.mjs';
+import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop, preCommitHookScript, parseDiffRange } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
+import { checkDroppedSymbols, collectDefs } from './symbol-integrity.mjs';
 
 let pass = 0;
 const ok = (label, cond) => { assert.ok(cond, label); console.log(`  ✓ ${label}`); pass++; };
@@ -971,5 +972,148 @@ ok('soft expiry: an aged-out soft aside stops nagging (no finding, marked stale)
   (() => { const s = surfaceOpenLoop({ id: 't3', task: 'x', deliverable: ['handleFoo'], tier: 'soft', status: 'pending', surfaced: true, age: 5 }, ''); return s.finding === null && s.task.status === 'stale'; })());
 ok('soft first-surface: a soft aside surfaces ONCE as info (never block, even with a done-claim)',
   (() => { const s = surfaceOpenLoop({ id: 't4', task: 'the 304 is fine', deliverable: ['handleBar'], tier: 'soft', status: 'pending' }, 'Done — handleBar shipped'); return s.finding && s.finding.sev === 'info'; })());
+
+// ── Class 6: dropped symbol left dangling under a preservation claim (symbol-integrity.mjs) ──
+// The rule: preservation/refactor/rename/merge claim · a def the diff REMOVED · defined NOWHERE in the
+// tree · still CALLED (bare `foo(` or self `this.foo()`) → warn quoting the dead callsite. grepTree is
+// stubbed (it returns `git grep -n`-shaped `path:line:content`); '' = clean no-match, throw = grep down.
+{
+  const PRESERVE = 'Refactored the billing classes into one — everything preserved.';
+  const RM = `--- a/src/tax.js\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-function computeTax(order, rate) {\n-  return order * rate;\n-}\n`;
+  const fires6 = (r) => r.length === 1 && r[0].cls === 6 && r[0].sev === 'warn';
+
+  // collectDefs unit — the parsing that everything rests on.
+  ok('c6 collectDefs: removed def keyed off `--- a/` even for a DELETED file (+++ /dev/null)',
+    (() => { const { removed, added } = collectDefs(RM); return removed.has('computeTax') && removed.get('computeTax').file === 'src/tax.js' && added.size === 0; })());
+  ok('c6 collectDefs: callback-call + keyword lines mint NO defs (clean-params + KW guard)',
+    collectDefs(`--- a/x.js\n+++ b/x.js\n@@ -1,4 +1 @@\n-  it('works', function() {\n-  withRetry(el, () => {\n-  if (x) {\n-  for (const y of z) {\n`).removed.size === 0);
+  ok('c6 collectDefs: signature rewrite → same name in removed AND added (Layer-1 suppresses)',
+    (() => { const { removed, added } = collectDefs(`--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-function foo(a) {\n+function foo(a, b) {\n`); return removed.has('foo') && added.has('foo'); })());
+  ok('c6 collectDefs: method→arrow-field both mint the name (method+class-field forms)',
+    collectDefs(`--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-  compute(a) {\n+  compute = (a) => {\n`).added.has('compute'));
+  ok('c6 collectDefs: def removed from a TEST file is never a candidate',
+    collectDefs(`--- a/util.test.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-function helper(a) {\n`).removed.size === 0);
+  ok('c6 collectDefs: def moved into tmp/ does NOT count as added (scratch-move dodge)',
+    !collectDefs(`--- a/a.js\n+++ b/a.js\n@@ -1 +0,0 @@\n-function foo(a) {\n+++ b/tmp/dead.js\n+function foo(a) {\n`).added.has('foo'));
+
+  // Gate.
+  ok('c6 gate: no preservation claim → silent',
+    checkDroppedSymbols({ claim: 'Added a CSV button.', diff: RM, grepTree: () => 'src/order.js:8:computeTax(x)' }).length === 0);
+  ok('c6 gate: "merged staging into master" (git-branch) → silent',
+    checkDroppedSymbols({ claim: 'Merged staging into master.', diff: RM, grepTree: () => 'u.js:3:computeTax(x)' }).length === 0);
+  ok('c6 gate: bare "Done." but an ASK says "consolidate the parsers" → gate opens, fires',
+    fires6(checkDroppedSymbols({ claim: 'Done.', asks: ['consolidate the three parsers into one'], diff: RM, grepTree: () => 'u.js:3:computeTax(x)' })));
+
+  // Must FIRE.
+  ok('c6 TP: bare dangling caller → fires, warn, quotes the callsite',
+    (() => { const r = checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'src/order.js:8:const t = computeTax(x)' }); return fires6(r) && /computeTax/.test(r[0].msg) && /src\/order\.js:8/.test(r[0].msg); })());
+  ok('c6 TP: self `this.` dangling caller → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'src/bill.js:4:    this.computeTax(rate);' })));
+  ok('c6 TP: `super.` dangling caller → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/base.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-  render(ctx) {\n`, grepTree: () => 'child.js:4:    super.render(ctx)' })));
+  ok('c6 TP: sole surviving caller is in a TEST file → still a real broken build → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'checkout.test.js:9:computeTax(1)' })));
+  ok('c6 TP: authorised removal that LEFT a dangling caller → fires (no disclosure suppressor)',
+    fires6(checkDroppedSymbols({ claim: 'Refactored; removed computeTax as asked — everything else preserved.', diff: RM, grepTree: () => 'u.js:3:this.computeTax(x)' })));
+  ok('c6 TP: rename with a MISSED old-name caller → fires on the broken call',
+    fires6(checkDroppedSymbols({ claim: 'Renamed computeTax to calculateTax — no behaviour change.', diff: `--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-function computeTax(a) {\n+function calculateTax(a) {\n`, grepTree: () => 'report.js:9:computeTax(x)' })));
+
+  // Must stay GREEN.
+  ok('c6 FP: no caller anywhere (dead-code / clean removal) → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => '' }).length === 0);
+  ok('c6 FP: rename with all callers updated (no old-name call) → silent',
+    checkDroppedSymbols({ claim: 'Renamed computeTax to calculateTax.', diff: `--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-function computeTax(a) {\n+function calculateTax(a) {\n`, grepTree: () => 'report.js:9:calculateTax(x)' }).length === 0);
+  ok('c6 FP: clean merge (validateEmail+validatePhone→validate, callers rewired) → silent',
+    checkDroppedSymbols({ claim: 'Merged the two validators into validate() — behaviour identical.', diff: `--- a/v.js\n+++ b/v.js\n@@ -1,2 +1 @@\n-  validateEmail(x) {\n-  validatePhone(y) {\n+  validate(x, y) {\n`, grepTree: () => 'form.js:3:this.validate(a,b)' }).length === 0);
+  ok('c6 FP: defined elsewhere (overload / other class) → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'src/other.js:2:function computeTax(a){ return a }\nsrc/order.js:8:computeTax(x)' }).length === 0);
+  ok('c6 FP: cross-object receiver collision (order.computeTax) → silent (Arm R abstains)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'src/order.js:8:  order.computeTax(x);' }).length === 0);
+  ok('c6 FP: bare stdlib global collision (removed local `open`; open(url) bare) → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-function open(p) {\n`, grepTree: () => 'a.js:2:open(url)' }).length === 0);
+  ok('c6 FP: common method name `get` only ever `.get(`-called → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-  get(k) {\n`, grepTree: () => 'a.js:2:  cache.get(k)\na.js:3:  store.get(j)' }).length === 0);
+  ok('c6 FP: package (non-relative) import suppresses → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => "u.js:1:import { computeTax } from '@org/tax'\nu.js:3:computeTax(x)" }).length === 0);
+  ok('c6 FP: relative re-export is NEUTRAL — with NO call → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => "barrel.js:1:export { computeTax } from './tax'" }).length === 0);
+  ok('c6 dodge closed: relative re-export does NOT suppress a real dangling this-call → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => "barrel.js:1:export { computeTax } from './tax'\nu.js:3:this.computeTax(x)" })));
+  // NB: package spec `@org/t` (not relative) — so ONLY the `import type` guard can keep this from
+  // suppressing; a relative spec would be neutral regardless and wouldn't exercise the guard.
+  ok('c6 dodge closed: `import type` does NOT suppress a real dangling call → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => "u.js:1:import type { computeTax } from '@org/t'\nu.js:3:this.computeTax(x)" })));
+  ok('c6 FP: JSDoc block-comment "call" → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'u.js:3: * call computeTax() to run' }).length === 0);
+  ok('c6 FP: name inside a string literal → silent (blankStrings)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'u.js:3:log("computeTax(x) ran")' }).length === 0);
+  ok('c6 FP: caller in a generated/vendored dir (dist/*.min.js) → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => 'dist/bundle.min.js:1:computeTax(x)' }).length === 0);
+  // Trailing substring with MATCHING case (`parse` inside `reparse`) — isolates the `(?<![\w$.])`
+  // boundary lookbehind, not a lucky case mismatch.
+  ok('c6 FP: substring — removed `parse`, only `reparse(` hits → silent (boundary lookbehind)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-function parse(a) {\n`, grepTree: () => 'u.js:3:const r = reparse(x)' }).length === 0);
+  ok('c6 substring sanity: removed `parse`, a BARE parse( DOES fire (boundary allows the real call)',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-function parse(a) {\n`, grepTree: () => 'u.js:3:const r = parse(x)' })));
+  ok('c6 FP: moved to a brand-new untracked file in the same diff → silent (Layer 1)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.js\n+++ b/a.js\n@@ -1 +0,0 @@\n-function foo(a) {\n+++ b/new.js\n+function foo(a) {\n+  return a\n`, grepTree: () => 'u.js:3:foo(x)' }).length === 0);
+
+  // Robustness.
+  ok('c6 fail-open: grepTree throws (git down / bad regex) → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: () => { throw Object.assign(new Error('boom'), { status: 2 }); } }).length === 0);
+  ok('c6 structural: no grepTree → silent (no call evidence, never fires on Layer-1 alone)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: RM, grepTree: null }).length === 0);
+  // Pre-commit (paste-from-chat): requireClaim:false runs gate-free — a dangling ref is a broken build
+  // with or without a claim; the message drops the "claimed behaviour-preserving" lead.
+  ok('c6 pre-commit: requireClaim:false + NO claim + dangling caller → fires (covers manual paste at commit)',
+    (() => { const r = checkDroppedSymbols({ claim: '', diff: RM, requireClaim: false, grepTree: () => 'u.js:3:this.computeTax(x)' }); return r.length === 1 && r[0].cls === 6 && !/claimed behaviour/.test(r[0].msg) && /dangling reference/.test(r[0].msg); })());
+  ok('c6 pre-commit: requireClaim:false but nothing dangles → still silent (clean removal)',
+    checkDroppedSymbols({ claim: '', diff: RM, requireClaim: false, grepTree: () => '' }).length === 0);
+  ok('c6 default (Stop): requireClaim defaults true → no claim → silent (unchanged behaviour)',
+    checkDroppedSymbols({ claim: 'Added a button.', diff: RM, grepTree: () => 'u.js:3:this.computeTax(x)' }).length === 0);
+  // The generated pre-commit hook body — the tool forbids SILENT INERTNESS for itself, so the invariants
+  // that keep it fail-open-but-visible are pinned: decoded (not %20) single-quoted path, node-guard, script
+  // existence-guard. (Fable: a spaced path + `new URL().pathname` silently inerted every path-derived check.)
+  ok('c6 hook script: space-safe single-quoted path (no %20), node-guard, and script-exists fail-open',
+    (() => { const s = preCommitHookScript('/Users/a b/g.mjs'); return s.includes("GT='/Users/a b/g.mjs'") && !/%20/.test(s) && /command -v node/.test(s) && /\[ -f "\$GT" \]/.test(s) && /--pre-commit/.test(s); })());
+  ok('c6 hook script: a single-quote in the path is POSIX-escaped (no injection/breakage)',
+    preCommitHookScript("/a'b/g.mjs").includes("GT='/a'\\''b/g.mjs'"));
+  // CI mode (--diff-range) — the range reaches `git` via execSync, so parseDiffRange is a SECURITY path:
+  // it must reject shell metachars AND extract the right head (the tree CI greps).
+  ok('c6 CI parseDiffRange: origin/main..HEAD → head HEAD', parseDiffRange('origin/main..HEAD').head === 'HEAD');
+  ok('c6 CI parseDiffRange: base..feature → head feature', parseDiffRange('base..feature').head === 'feature');
+  ok('c6 CI parseDiffRange: open `abc..` means abc..HEAD → head HEAD', parseDiffRange('abc..').head === 'HEAD');
+  ok('c6 CI parseDiffRange: `..def` means HEAD..def → head def', parseDiffRange('..def').head === 'def');
+  ok('c6 CI parseDiffRange: single ref → head HEAD', parseDiffRange('HEAD~3').head === 'HEAD');
+  ok('c6 CI parseDiffRange: REJECTS shell injection (;, $(), spaces, backtick, quote) AND `-`-leading arg-injection',
+    !parseDiffRange('a;rm -rf b').ok && !parseDiffRange('a$(x)..b').ok && !parseDiffRange('a b').ok && !parseDiffRange('a`x`').ok && !parseDiffRange("a'..b").ok && !parseDiffRange('').ok
+    && !parseDiffRange('--ext-diff..HEAD').ok && !parseDiffRange('-flag').ok && !parseDiffRange('HEAD..--upload-pack=x').ok);
+  ok('c6 CI parseDiffRange: accepts normal refs (SHAs, tags, remotes, ~/^)',
+    parseDiffRange('a1b2c3d..HEAD').ok && parseDiffRange('v1.2.0..main').ok && parseDiffRange('HEAD^..HEAD').ok);
+  ok('c6 metachar name: removed `def valid?` (ruby) does not crash classification',
+    (() => { try { checkDroppedSymbols({ claim: 'Refactored, preserved.', diff: `--- a/a.rb\n+++ /dev/null\n@@ -1 +0,0 @@\n-  def valid?(x)\n`, grepTree: () => 'a.rb:2:valid?(x)' }); return true; } catch { return false; } })());
+  ok('c6 aggregation: 5 dropped-with-callers → exactly ONE cls-6 finding, ≤3 named + "+N more"',
+    (() => {
+      const diff = `--- a/m.js\n+++ /dev/null\n@@ -1,5 +0,0 @@\n-  alpha(x) {\n-  bravo(x) {\n-  charlie(x) {\n-  delta(x) {\n-  echo(x) {\n`;
+      const grep = () => ['alpha','bravo','charlie','delta','echo'].map((n,i)=>`u.js:${i}:this.${n}(1)`).join('\n');
+      const r = checkDroppedSymbols({ claim: PRESERVE, diff, grepTree: grep });
+      return r.length === 1 && r[0].cls === 6 && /\+2 more/.test(r[0].msg);
+    })());
+  // Placement, not mere presence: the marker must sit in the Honesty section, NOT the Rules/security one
+  // (every card contains the word "Honesty", so `.includes('Honesty')` was vacuous).
+  ok('c6 card: a cls-6 finding renders under the Honesty section, not Rules',
+    (() => { const c = renderCard([{ cls: 6, sev: 'warn', msg: 'DANGLINGMARKER6' }], { intent: 'refactor' }); return /Honesty[\s\S]*DANGLINGMARKER6/.test(c) && !/Rules[\s\S]*DANGLINGMARKER6/.test(c); })());
+
+  // TypeScript def shapes (Fable DEFECT-1) — generics `<T>` and `: ReturnType` between `)` and `{`/`=>`,
+  // both directions. And `.mts`/`.cts` (DEFECT-2). These were the untested hole (the e2e was untyped JS).
+  ok('c6 TS: typed method MOVE (foo<T>(x): T {) — surviving self-caller, def recognized elsewhere → silent',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.ts\n+++ b/a.ts\n@@ -1 +0,0 @@\n-  foo(a) {\n`, grepTree: () => 'b.ts:5:  foo<T>(x: T): T {\nc.ts:9:    this.foo(y);' }).length === 0);
+  ok('c6 TS: typed method DROP (compute(x: number): number {) — removed-side recognized → fires',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-  compute(x: number): number {\n`, grepTree: () => 'c.ts:9:    this.compute(y)' })));
+  ok('c6 TS: typed arrow field (foo = (a): number =>) move → silent (class-field arm return-type)',
+    checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.ts\n+++ b/a.ts\n@@ -1 +0,0 @@\n-  foo(a) {\n`, grepTree: () => 'b.ts:5:  foo = (a: number): number => a\nc.ts:9:    this.foo(y);' }).length === 0);
+  ok('c6 .mts: real drop in a .mts with a dangling caller → fires (familyOf covers mts/cts)',
+    fires6(checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.mts\n+++ /dev/null\n@@ -1 +0,0 @@\n-function calc(a) {\n`, grepTree: () => 'b.mts:2:calc(x)' })));
+}
 
 console.log(`\n${pass} checks passed.`);

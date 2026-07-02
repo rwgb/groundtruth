@@ -12,7 +12,7 @@ node corpus-precision.mjs
 
 Prints the FP/TP breakdown by label and bucket, and the false-positive rate **at capture** (majority FP — the number v0.8.0 set out to cut). Every FP on the corpus carries the phase that fixed it; the fix + regression test is in [`../FIXES.md`](../FIXES.md).
 
-**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 309**, red-team **12/12**.
+**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 362**, red-team **14/14**.
 
 ## 2. Live false-positive rate on your repo (the pending headline)
 

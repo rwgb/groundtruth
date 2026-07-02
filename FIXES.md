@@ -1,6 +1,6 @@
-# Groundtruth — bug-fix report (v0.8.0)
+# Groundtruth — bug-fix report (v0.9.0)
 
-Groundtruth audits whether an agent did what it was asked. This release turned that lens on **Groundtruth itself** — first empirically (reading 14 of its own live sessions), then through two adversarial review passes. Every finding below was reproduced against the real code, fixed at the root, and locked with a regression test. Self-check went from 242 → **309 checks**; the red-team suite stayed 12/12 throughout.
+Groundtruth audits whether an agent did what it was asked. **v0.8.0** turned that lens on **Groundtruth itself** — first empirically (reading 14 of its own live sessions), then through two adversarial review passes. **v0.9.0** adds a new honesty class (**6 — dropped symbol / dangling reference**) and two new enforcement rungs (pre-commit + CI), built the same way across three more review passes (see the Class-6 section below). Every finding was reproduced against the real code, fixed at the root, and locked with a regression test. Self-check went from 242 → **362 checks**; the red-team suite grew to **14/14** (a Class-6 dangling-ref rail added).
 
 **Method** (the same one Groundtruth preaches): for each fix we asked *"what made the wrong thing cheaper, and what's the cheapest way for a smart agent to make this check go green without doing the work?"* — then removed that path and left a test so it can't come back.
 
@@ -121,8 +121,43 @@ The ledger tracks each ask that names a deliverable and only closes it when the 
 
 ---
 
+## Class 6 — dropped symbol / dangling reference (the refactor "everything preserved" lie)
+
+The new honesty class + its two new enforcement rungs (pre-commit, CI), built precision-first across three review passes. Symptom → cause → fix → the fixture that pins it.
+
+### C6-1 · A naive "defined-nowhere" check false-fired on every rename / merge / casing-change
+- **Symptom:** flagging any removed function/method defined nowhere in the tree meant a plain rename (`computeTax`→`calculateTax`, callers updated), a two-into-one merge, or a camelCase↔snake_case change — all behaviour-preserving — read as "dropped."
+- **Root cause:** chasing *intent* (was it renamed?) rather than the observable *consequence*.
+- **Fix:** fire only on a **dangling reference** — the removed name is still **called** somewhere. A rename/merge/recasing that updates its callers leaves nothing dangling → silent; one that misses a caller fires on the genuinely broken call and quotes it. No rename-detector, no normalize step, no disclosure list.
+- **Test:** `c6 FP: clean merge …`, `c6 FP: rename with all callers updated`, `c6 TP: rename with a MISSED old-name caller`.
+
+### C6-2 · Library/builtin method-name collisions false-fired
+- **Symptom:** removing a local `flush`/`get`/`render` fired because `stream.flush()` / `cache.get()` (unrelated objects, methods defined out-of-tree) looked like dangling calls.
+- **Root cause:** counting `anyObj.name(` as a call — but its resolution runs through the receiver's TYPE, invisible to grep.
+- **Fix:** receiver-gated classification ("Option R") — only a **bare** `foo(` (minus a stdlib-globals set) and a **self** `this.foo()`/`super`/`self` count; every other receiver abstains (the same abstain-over-guess posture as Class 4 on package imports).
+- **Test:** `c6 FP: cross-object receiver collision`, `c6 FP: common method name get only ever .get(-called`, `c6 FP: bare stdlib global collision`.
+
+### C6-3 · TypeScript signatures broke def recognition — both directions
+- **Symptom:** `foo<T>(x): T {` and `foo = (a): number => {}` weren't recognized as defs, so a typed method MOVE false-fired (Layer-1 missed the re-add) and a typed method DROP was silently missed (never a candidate). TS is a primary refactor target; the first e2e was untyped JS, so it slipped through review round 1.
+- **Fix:** the def regexes accept optional generics `<…>` and a `: ReturnType` between `)` and `{`/`=>`; `familyOf` covers `.mts`/`.cts`.
+- **Test:** `c6 TS: typed method MOVE … → silent`, `c6 TS: typed method DROP … → fires`, `c6 TS: typed arrow field`, `c6 .mts`.
+
+### C6-4 · The pre-commit installer wrote a silently-inert hook on any spaced path  *(the cardinal sin)*
+- **Symptom:** installing from a path with a space (`/Users/John Doe/…`, Windows `C:\Users\First Last\`, a cloud-synced `.claude`) produced a `.git/hooks/pre-commit` whose `[ -f "$GT" ]` guard always failed → the hook installed but never ran, forever — exactly the silent inertness the tool exists to prevent.
+- **Root cause:** `new URL(import.meta.url).pathname` percent-encodes spaces (`John%20Doe`) — and the same idiom sat in **two pre-existing** sites (rule compilation, and the `main()` entry-guard, which would make the *whole tool* inert on a spaced path). The lazy fix was the root-cause fix: swap the idiom at all three sites, not just the new one.
+- **Fix:** `fileURLToPath(import.meta.url)` everywhere. The generated hook body is a pure, exported `preCommitHookScript()`: single-quoted (POSIX-escaped) path; fail-open guards with stderr breadcrumbs for a missing `node` (GUI git clients run a minimal PATH → an unguarded `exec node` exits 127 and blocks *every* commit) and a missing script (stale path after a plugin update).
+- **Test:** `c6 hook script: space-safe single-quoted path (no %20), node-guard …`, `c6 hook script: a single-quote in the path is POSIX-escaped`, plus a spaced-path install e2e.
+
+### C6-5 · CI-mode (`--diff-range`) inertness / false-fire / injection edges
+- **Shallow-clone silent pass:** `actions/checkout` defaults to `fetch-depth:1`, so a PR base ref is absent → `git diff` errors → the `git` helper swallows it → empty diff → a silent PASS on a broken PR. **Fix:** verify each range endpoint resolves (and for three-dot ranges that a merge-base exists) and FAIL LOUD otherwise.
+- **`git grep <tree>` prefix bypass:** hits come back `HEAD:path` → the `(^|/)dist/` / `excludedScanPath` path-**prefix** filters silently miss (`HEAD:dist/…` has no leading `/`) → a CI false-fire. **Fix:** strip the `<tree>:` prefix in the tree-grep branch.
+- **Argument injection:** the range reaches `git` via `execSync`. **Fix:** `parseDiffRange` accepts only a safe ref token and rejects shell metachars and `-`-leading (`--upload-pack=…`) segments. **Test:** `c6 CI parseDiffRange: REJECTS shell injection … AND -leading arg-injection`.
+
+---
+
 ## Residual / documented limits (honest scope)
 
+- **Class 6 — lossy merge / gutted body:** a method whose NAME survives (callers happy) but whose LOGIC was silently dropped is behaviour-equivalence — semantic, not deterministic — so Class 6 is silent on it (partial cover: a stub/TODO body trips Class 2). Also silent: a dropped **public** method with no in-repo caller (precision over recall), dynamic dispatch `obj[name]()`, and overloads/same-name-on-another-class (name-level, not `Class.method`-level). C/C++ abstain (prototype ≠ def on one line). Three-dot ranges across **unrelated histories** are rejected loudly, never silently scanned.
 - **Bare `TODO` as prose inside a comment** (no backticks) is indistinguishable from a real one deterministically — the one self-match class that remains, and near-zero on a normal repo.
 - **Computed-member `eval`** (`window["eval"](x)`, `globalThis.eval`, aliasing) is not caught by the call-position rule — a pre-existing limit, not opened by this change.
 - **Deterministic-NL ceiling** on request/aside classification and claim-negation: position and structure cover ~95%; genuine natural-language understanding is off the deterministic table by design. Each such shortcut is marked in-source. **This ceiling is two-sided, not purely fail-safe.** The claim-negation window (L9) shows both failure modes with the token's file *absent* from the diff (i.e. a real false-done):

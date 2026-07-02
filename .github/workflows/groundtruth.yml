@@ -1,0 +1,28 @@
+# Groundtruth — CI / pre-merge gate. Copy this into your repo's .github/workflows/.
+# It scans the PR's diff range and FAILS the check on a block-severity finding (hardcoded secret, RLS-off
+# table, permissive policy) OR a dropped-symbol dangling ref — deterministic, no LLM, no API key.
+#
+# This is the bypass-proof rung of the ladder (Stop → pre-commit → CI): --no-verify can't skip it, and a
+# human overrides by reviewing + merging anyway. A reviewer verifies a Class-6 finding in seconds because
+# it quotes the dead callsite.
+name: Groundtruth
+on: [pull_request]
+
+jobs:
+  groundtruth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # REQUIRED — full history so the PR base resolves. Groundtruth fails LOUD (never
+                           # silently passes) if the base ref is missing, so a shallow clone would error, not skip.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Fetch the engine. (In the Groundtruth repo itself, drop this step and use `node hooks/groundtruth.mjs`.)
+      - run: git clone --depth 1 https://github.com/akahkhanna/groundtruth /tmp/groundtruth
+
+      - name: Scan the PR range
+        # base.sha is the PR base tip (always present in the event; in history thanks to fetch-depth: 0).
+        run: node /tmp/groundtruth/hooks/groundtruth.mjs --diff-range "${{ github.event.pull_request.base.sha }}..HEAD"

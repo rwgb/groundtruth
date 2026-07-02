@@ -33,7 +33,11 @@ Then check each item and report `✓`/`✗`:
    - If unset, say: "Optional — `GROUNDTRUTH_KEY=<random>` in `settings.local.json` env signs the integrity snapshot. Be honest about scope: **in-session it's best-effort** (the agent's shell can read the key), so it only raises the bar. **Real tamper-prevention is a CI/pre-merge gate**, not the in-session hook. Generate one with `node -e \"console.log(require('crypto').randomBytes(24).toString('hex'))\"`. Don't reuse a real credential."
    - Remind: env vars belong in `settings.local.json` (or the shell `claude` was launched from) — a project `.env` is the app's, NOT read by the hook. And `settings.local.json` should be gitignored (it holds the key); if it's tracked, `git rm --cached .claude/settings.local.json`.
 
-End with one summary line, e.g.: `Setup → rules: ✗ run approve-all · badge: ✗ · block: warn (on = enforce) · key: off (CI = real enforcement).`
+5. **Pre-commit scan** (optional — the safety net for code an agent didn't author: a paste from a Claude *chat*, a hand-edit). The Stop hook only fires when Claude Code drives the edit; the git pre-commit hook fires on every `git commit` regardless, so it's the one place a manual paste gets checked. Check for a `.git/hooks/pre-commit` containing `groundtruth-pre-commit`.
+   - ✗ if absent → **"run `node \"<HOOKS>/groundtruth.mjs\" --install-pre-commit` — scans the STAGED diff on every commit (secrets · RLS · stubs · dropped-symbol dangling refs). It's fail-open (never blocks on its own breakage), won't clobber a non-Groundtruth hook, and `git commit --no-verify` bypasses once. Re-run it after a plugin update if the path moves."**
+   - If a foreign `pre-commit` already exists, `--install-pre-commit` refuses and prints the one line to add manually.
+
+End with one summary line, e.g.: `Setup → rules: ✗ run approve-all · badge: ✗ · block: warn (on = enforce) · key: off (CI = real enforcement) · pre-commit: ✗ install.`
 
 Then **offer to do the `settings.local.json` parts yourself** (the user asked for this): *"Want me to set up `settings.local.json` now — generate a random key, add the status badge + `GROUNDTRUTH_BLOCK=1`, and make sure the file is gitignored?"* If they say yes:
 1. Generate a key: ``node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`` — capture the output; do NOT invent one.
