@@ -1,5 +1,21 @@
 # Groundtruth
 
+> ### Your &ldquo;done&rdquo; is a claim. The diff is the evidence.
+>
+> **Your agent wears AI glasses. Groundtruth wears reading glasses.**
+
+<p align="center">
+  <img src="assets/groundtruth-nerd.svg" alt="Groundtruth — the nerd: your agent flashes &ldquo;done, tests pass&rdquo; through its AI glasses; the senior dev pushes his reading glasses down and opens the diff." width="560">
+</p>
+
+**Meet the nerd.** A long-tenured senior dev who doesn't argue with your &ldquo;it works&rdquo; — he just
+opens the file and reads the diff. Plain rectangular readers on a magnetic cord, looks over the top of them,
+says little. When he catches your agent mid-&ldquo;done,&rdquo; the reaction is the whole point:
+
+> ## &ldquo;&hellip;what the nerd&rdquo;
+
+---
+
 **Audits whether an agent actually did what it was asked — and catches the false "Done."**
 
 A coding agent reports success. Groundtruth reads the *same* turn from the outside — the request, what
