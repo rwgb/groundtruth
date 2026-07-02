@@ -15,11 +15,16 @@ Then check each item and report `✓`/`✗`:
    - If `proposed-rules.json` is missing, init hasn't run: say "start a fresh session, or run `node \"<HOOKS>/compile-rules.mjs\" .`".
 
 2. **Status badge** (recommended — in the VS Code extension, warn/clean verdicts only show via the badge). Read `.claude/settings.local.json` (and `settings.json`) for a `statusLine` key.
-   - ✗ if absent → give the EXACT block to paste into `.claude/settings.local.json`, with `<HOOKS>` filled in:
-     ```json
-     "statusLine": { "type": "command", "command": "node \"<HOOKS>/groundtruth-statusline.mjs\"" }
+   - **Deploy the version-agnostic wrapper first** (do NOT pin the version dir — a path like `.../groundtruth/0.8.0/hooks/...` silently breaks the badge on the next plugin update). Copy the shipped wrapper to a STABLE path and make it executable:
+     ```bash
+     cp "<HOOKS>/groundtruth-statusline.sh" "$HOME/.claude/groundtruth-statusline.sh" && chmod +x "$HOME/.claude/groundtruth-statusline.sh"
      ```
-     Note: only ONE statusLine can exist — if they already use one (ponytail, etc.), this replaces it.
+     (The wrapper resolves the newest installed version at runtime, so the badge survives every update. It fails open — no install / no node → prints nothing.)
+   - ✗ if `statusLine` is absent → give the EXACT block to paste into `.claude/settings.local.json`, with the user's real absolute home path filled in (Claude Code does not reliably expand `~`/`$HOME` in this command):
+     ```json
+     "statusLine": { "type": "command", "command": "bash \"/absolute/home/.claude/groundtruth-statusline.sh\"" }
+     ```
+     Note: only ONE statusLine can exist — if they already use one (ponytail, etc.), this replaces it. If an OLD version-pinned `…/<version>/hooks/groundtruth-statusline.mjs` statusLine is already present, replace it with this wrapper form.
 
 3. **Block mode** (default = warn, which is correct until you trust precision). Run `printenv GROUNDTRUTH_BLOCK` to detect the env anchor; also check `.claude/groundtruth/config.json` for `{block:true}`.
    - Report the live mode. To enable: **`/groundtruth-block on`** (convenience, agent-writable) OR add `"env": { "GROUNDTRUTH_BLOCK": "1" }` to `.claude/settings.local.json` (the **un-disablable** anchor — recommended for enforcement). Keep warn until you've watched it run clean on your real sessions; false positives are disruptive in block mode.
@@ -32,7 +37,7 @@ End with one summary line, e.g.: `Setup → rules: ✗ run approve-all · badge:
 
 Then **offer to do the `settings.local.json` parts yourself** (the user asked for this): *"Want me to set up `settings.local.json` now — generate a random key, add the status badge + `GROUNDTRUTH_BLOCK=1`, and make sure the file is gitignored?"* If they say yes:
 1. Generate a key: ``node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`` — capture the output; do NOT invent one.
-2. Read `.claude/settings.local.json` (create `{}` if absent), and **merge** (preserve existing keys): add `env.GROUNDTRUTH_BLOCK = "1"` (only if the user wants block — default to leaving it as warn and ask), `env.GROUNDTRUTH_KEY = <generated>`, and the `statusLine` block from step 2 with `<HOOKS>` filled in. Write valid JSON.
+2. Deploy the status-line wrapper (`cp "<HOOKS>/groundtruth-statusline.sh" "$HOME/.claude/groundtruth-statusline.sh" && chmod +x` it). Then read `.claude/settings.local.json` (create `{}` if absent), and **merge** (preserve existing keys): add `env.GROUNDTRUTH_BLOCK = "1"` (only if the user wants block — default to leaving it as warn and ask), `env.GROUNDTRUTH_KEY = <generated>`, and the `statusLine` block pointing at the wrapper with the user's real absolute home path filled in (`bash "/abs/home/.claude/groundtruth-statusline.sh"`). If an old version-pinned statusLine exists, replace it. Write valid JSON.
 3. If `.claude/settings.local.json` is git-tracked (`git ls-files --error-unmatch` succeeds), run `git rm --cached .claude/settings.local.json` so the key never gets committed, and confirm it matches a `.gitignore` rule.
 4. **State the caveat plainly, don't bury it:** "Done — but note: a key I generated (or any key my shell can `printenv`) is **best-effort in-session only** — it raises the bar, it is not real prevention. For genuine integrity, generate the key yourself and hold it where my tools can't read it (a CI secret), and run the enforcing check in CI/pre-merge. The block flag, though, IS solid (I can read it but can't change what the hook sees)."
 5. Tell them the env takes effect on the next session (the hook reads it at launch), and the badge after a Claude Code restart.
