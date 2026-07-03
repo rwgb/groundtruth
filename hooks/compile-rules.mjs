@@ -25,6 +25,7 @@
 import { execFileSync } from 'node:child_process';   // execFile (no shell) — the doc pattern has backticks
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';            // run-as-main guard must be cross-platform (see bottom)
 import { compileRuleRe } from './groundtruth.mjs';   // SAME regex normalizer the runtime uses (grounder⇄runtime parity)
 
 // Every declared rule source (matches groundtruth.mjs RULE_SRC_RE — the --watch-rules trigger).
@@ -208,4 +209,8 @@ function main() {
     : `  ⚠ ${r.id} (${r.hits} code hits) — e.g. ` + r.sample));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+// Run-as-main guard: `file://${argv[1]}` is WINDOWS-BROKEN — import.meta.url is `file:///C:/...` (forward
+// slashes) but argv[1] is `C:\...` (backslashes), so they never match and main() never runs → recompileRules
+// (which shells out here) silently writes no proposed-rules.json, killing the rules feature on Windows.
+// pathToFileURL normalizes both and resolves a relative argv too. Same class as the C6 grep-quoting fix.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main();

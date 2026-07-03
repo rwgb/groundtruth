@@ -6,10 +6,11 @@
  * Class-7 judgment is the semantic/roadmap call, not a deterministic one). assert-based, no deps.
  */
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, projectFindings, advanceSnapshot, freshRatifiers, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop, preCommitHookScript, parseDiffRange } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
 import { checkDroppedSymbols, collectDefs } from './symbol-integrity.mjs';
@@ -1239,6 +1240,25 @@ ok('soft first-surface: a soft aside surfaces ONCE as info (never block, even wi
     checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.ts\n+++ b/a.ts\n@@ -1 +0,0 @@\n-  foo(a) {\n`, grepTree: () => 'b.ts:5:  foo = (a: number): number => a\nc.ts:9:    this.foo(y);' }).length === 0);
   ok('c6 .mts: real drop in a .mts with a dangling caller → fires (familyOf covers mts/cts)',
     fires6(checkDroppedSymbols({ claim: PRESERVE, diff: `--- a/a.mts\n+++ /dev/null\n@@ -1 +0,0 @@\n-function calc(a) {\n`, grepTree: () => 'b.mts:2:calc(x)' })));
+}
+
+// ── Windows regression: compile-rules.mjs run-as-main guard (exercises the REAL CLI path recompileRules uses) ──
+// The old `import.meta.url === file://${argv[1]}` idiom never matched on Windows (file:///C:/… vs C:\…), so
+// main() never ran → proposed-rules.json was never written → the rules feature was silently DEAD on Windows.
+// The pure-function tests above missed it entirely (they import compile() directly, bypassing the guard); this
+// spawns the script the way the engine does and asserts main() actually fires and writes the file.
+{
+  const dir = mkdtempSync(pathJoin(tmpdir(), 'gt-compile-'));
+  const script = fileURLToPath(new URL('./compile-rules.mjs', import.meta.url));
+  let ranMain = false, wrote = false;
+  try {
+    const out = execFileSync('node', [script, dir], { encoding: 'utf8' });
+    ranMain = /PROPOSED \d+ rules/.test(out);
+    wrote = existsSync(pathJoin(dir, '.claude', 'groundtruth', 'proposed-rules.json'));
+  } catch { /* non-zero / crash → both stay false → fails loud */ }
+  ok('compile-rules CLI: run-as-main guard fires cross-platform — prints PROPOSED + writes proposed-rules.json',
+    ranMain && wrote);
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n${pass} checks passed.`);
