@@ -24,7 +24,7 @@ Then check each item and report `✓`/`✗`:
      ```json
      "statusLine": { "type": "command", "command": "bash \"/absolute/home/.claude/groundtruth-statusline.sh\"" }
      ```
-     Note: only ONE statusLine can exist — if they already use one (ponytail, etc.), this replaces it. If an OLD version-pinned `…/<version>/hooks/groundtruth-statusline.mjs` statusLine is already present, replace it with this wrapper form.
+     Note: only ONE statusLine can exist — if they already use one, this replaces it. If an OLD version-pinned `…/<version>/hooks/groundtruth-statusline.mjs` statusLine is already present, replace it with this wrapper form.
 
 3. **Block mode** (default = warn, which is correct until you trust precision). Run `printenv GROUNDTRUTH_BLOCK` to detect the env anchor; also check `.claude/groundtruth/config.json` for `{block:true}`.
    - Report the live mode. To enable: **`/groundtruth-block on`** (convenience, agent-writable) OR add `"env": { "GROUNDTRUTH_BLOCK": "1" }` to `.claude/settings.local.json` (the **un-disablable** anchor — recommended for enforcement). Keep warn until you've watched it run clean on your real sessions; false positives are disruptive in block mode.

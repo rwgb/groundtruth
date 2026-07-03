@@ -180,7 +180,7 @@ export const TEST_FILE_RE = /\.test\.|\.spec\.|_test\.(?:go|py|rb|exs?|java|kt|c
 // Class 9 — special-casing the evaluator (RHB "overfit-to-visible-check"): source that detects it's under
 // test/CI/audit so it can behave differently. High-confidence: gaming Groundtruth itself (reads the plugin's
 // own env vars, or writes one of its suppression tokens into source). Heuristic: a test/CI env probe in
-// NON-test source. ponytail: warn-only + one-per-turn — real app code legitimately has test-mode config, so
+// NON-test source. NOTE: warn-only + one-per-turn — real app code legitimately has test-mode config, so
 // this is a smell to confirm, not proof; tighten the env-probe arm if it gets noisy. Self-match-proof: the
 // arms need real access syntax (escaped dots/brackets), so this definition line can't trip itself.
 const EVALUATOR_DETECT_RE = /GROUNDTRUTH_[A-Z]\w*|groundtruth[-_](?:ok|off|skip|disable|ignore)|process\.env\.CI\b|process\.env\.\w*_?ENV\s*===?\s*['"]test|os\.environ(?:\.get\(|\[)\s*['"](?:CI|PYTEST)|ENV\[['"](?:CI|RAILS_ENV)|\bif\b[^;\n]{0,40}\b(?:is_?test|under_?test|in_?test|testing_?mode)\b/i;
@@ -253,7 +253,7 @@ export function envFindings(tracked = [], untracked = []) {
  *  properly-ignored .env is correctly silent). `git(args)` returns stdout (the bound helper from main). */
 function collectEnv(git) {
   const tracked = git('ls-files').split('\n').filter(Boolean);
-  // ponytail: paths with spaces are `"`-quoted by porcelain; env files rarely have spaces, so left as-is.
+  // NOTE: paths with spaces are `"`-quoted by porcelain; env files rarely have spaces, so left as-is.
   const untracked = git('status --porcelain --untracked-files=all').split('\n')
     .filter(l => l.startsWith('??')).map(l => l.slice(3).trim());
   return envFindings(tracked, untracked);
@@ -273,7 +273,7 @@ function changedFiles(diff) {
 
 /** Did a commit (or history-moving op) run this session? A missing baseline only HIDES work if something
  *  was actually committed — otherwise diffing against HEAD loses nothing. Grounded in the recorded commands.
- *  ponytail: substring match — a laundered commit (via a script) is missed, erring toward "no commit" →
+ *  NOTE: substring match — a laundered commit (via a script) is missed, erring toward "no commit" →
  *  warn not block; that's the in-session ceiling, CI is the real enforcement boundary. */
 export function sessionHasCommit(cmds = []) {
   return (cmds || []).some(c => /\bgit\s+(?:commit|merge|cherry-pick|revert|am|rebase)\b|\bgh\s+(?:pr\s+merge|merge)\b/.test(String(c)));
@@ -363,7 +363,7 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
   // Class 4 — phantom ref (best-effort, WARN only): a NEW relative import whose target file is
   // absent from the working tree, resolved against the importing file's own directory. Bare/package
   // specifiers are skipped (can't resolve cheaply).
-  // ponytail: best-effort + WARN-only — file-existence resolution, not full symbol resolution. Upgrade to
+  // NOTE: best-effort + WARN-only — file-existence resolution, not full symbol resolution. Upgrade to
   // proper resolution (a real resolver, or the roadmap LLM layer) only if this misses real phantom refs.
   let curFile = '', curLang = null, curSrc = false, sawC9 = false;
   for (const l of diff.split('\n')) {
@@ -404,7 +404,7 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
   for (const l of diff.split('\n')) {
     const h = l.match(/^\+\+\+ b\/(.+)$/);
     if (h) { cur = h[1]; continue; }
-    // ponytail: strip line comments only; a `--` inside a string literal is a rare edge we under-flag on.
+    // NOTE: strip line comments only; a `--` inside a string literal is a rare edge we under-flag on.
     if (l[0] === '+' && !l.startsWith('+++') && /\.sql$/i.test(cur)) sqlAdded += l.slice(1).replace(/--.*$/, '') + '\n';
   }
 
@@ -913,7 +913,7 @@ function claimClosesToken(claimMsg, tok) {
   // both let a far-away "pending/will" (about OTHER work) dodge a real false-done, AND — reusing the
   // ask-oriented splitClauses, which splits on `yet` — shredded "not yet done" into a false block. Test a
   // tight word window around EACH occurrence: the token closes only when NONE describes it as deferred/negated.
-  // ponytail: fixed ±3-word window is the tuning knob — widen only if a real negation lands just outside it
+  // NOTE: fixed ±3-word window is the tuning knob — widen only if a real negation lands just outside it
   //           (too wide re-admits the "nothing pending" dodge from 4 words away).
   const words = String(claimMsg).split(/\s+/);
   for (let i = 0; i < words.length; i++) {
