@@ -1105,11 +1105,17 @@ export function compareSnapshot(snap, curFiles = {}, freshCommands = new Set(), 
   else if (wasKeyed && !snap.sig)
     out.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn', msg: 'referee snapshot is UNSIGNED though it was written under a key — downgraded to evade the seal; verdict integrity NOT guaranteed' });
   else if (keyConfigured && !wasKeyed)
-    // env has a key now, but this snapshot is keyless — a benign key-introduction skew OR a downgrade that
-    // also flipped `keyed`; on disk we can't tell, so WARN (never block — that conflation was the false-block
-    // bug), keeping the dodge evident. CI re-snapshots same-run under the key (keyed:true), so the block path
-    // above still bites where it actually enforces.
-    out.push({ cls: 'tamper', sev: 'warn', msg: 'referee snapshot is unsigned while GROUNDTRUTH_KEY is set (it predates the key, or was downgraded) — re-run to re-snapshot under the key; integrity unverified this turn' });
+    // Env has a key now, but this session's baseline was snapshotted BEFORE any key existed (a keyless
+    // SessionStart, the key added later — /groundtruth-setup, a manual `export`, or a CI env). There was never
+    // a signed seal here, so nothing could have been downgraded or forged: this is "signing not active yet",
+    // NOT tamper. Quiet info (the T1 regime-split) — pulled to the ⚪ footer, not injected into the next turn,
+    // doesn't flip the verdict, and never renders under the alarmist "agent rewrote its OWN state" header. A
+    // REAL keyed→unsigned downgrade is the branch above (stays loud); an actual out-of-band change is still
+    // surfaced by the per-target loop below (info in this unsigned regime). Documented ceiling: this also
+    // quiets the delete-signed-then-write-keyless dodge to info — a shell-readable key already lets a competent
+    // agent write a VALID signed forgery (fully quiet today), so this warn only ever tripped a naive attacker;
+    // real enforcement is a key held OUT of the agent's shell + a CI gate, exactly as integrityScope states.
+    out.push({ cls: 'integrity_note', sev: 'info', msg: 'integrity signing is not active this session — the baseline was snapshotted before GROUNDTRUTH_KEY was set; restart the session to sign it. Nothing was tampered.' });
   // An out-of-band change is only AUTHORITATIVE in a trustworthy regime — a valid signature under a
   // configured key. Without that, the whole hash-snapshot is best-effort (a laundered tamper can re-forge
   // it), so firing a warn/block claims more confidence than the mechanism has, and it fired on every

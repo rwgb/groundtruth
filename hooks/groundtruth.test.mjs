@@ -703,6 +703,16 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: 'deadbeef', sigValid: false }), { [CFG]: 'aaaa' }).some(f => /signature INVALID/i.test(f.msg)));
   ok('snapshot: no snapshot (SessionStart did not run) → nothing to compare, no crash',
     compareSnapshot(null, { x: 'y' }).length === 0);
+  // KEY-INTRODUCTION SKEW (the /groundtruth-setup + manual-`export` symptom): a keyless baseline (keyed:false)
+  // with a key now in env is "signing not active yet", NOT tamper — there was never a signed seal to downgrade.
+  // → a quiet integrity_note, never a loud warn under the "agent rewrote its OWN state" header.
+  ok('snapshot: keyless baseline + key now set + UNCHANGED → NO loud tamper (benign key-introduction skew)',
+    !compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'aaaa' }, new Set(), false, /*keyConfigured*/ true).some(f => f.cls === 'tamper'));
+  ok('snapshot: that benign key-skew is info-tier only (quiet footer, not injected)',
+    (() => { const o = compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'aaaa' }, new Set(), false, true); return o.length > 0 && o.every(f => f.cls === 'integrity_note' && f.sev === 'info'); })());
+  // A REAL downgrade stays LOUD: a baseline written UNDER a key (keyed:true) that is now missing its signature.
+  ok('snapshot: keyed:true baseline now unsigned (downgrade to evade the seal) → STILL loud tamper',
+    compareSnapshot(snap({ [CFG]: 'aaaa' }, { keyed: true }), { [CFG]: 'aaaa' }, new Set(), false, true).some(f => f.cls === 'tamper' && f.sev === 'warn'));
   // The verdict declares its own integrity SCOPE so a green doesn't overclaim (T1 honesty).
   ok('integrityScope: NO key → "BEST-EFFORT" + names the laundered-write gap + points to CI',
     /BEST-EFFORT/.test(integrityScope(false)) && /launder/i.test(integrityScope(false)) && /CI/.test(integrityScope(false)));
@@ -718,11 +728,13 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: 'x', sigValid: true, keyed: true }), { [CFG]: 'aaaa' }, new Set(), false, true).length === 0);
   ok('H7: NO key configured → unsigned snapshot is accepted (documented limit, hash-compare only)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: null, sigValid: null }), { [CFG]: 'aaaa' }, new Set(), false, false).length === 0);
-  // VERSION-SKEW regression (the live false-BLOCK): a KEYLESS snapshot (written before GROUNDTRUTH_KEY was
-  // set, or by an older plugin) read under a now-configured key must NOT block — it WARNs, never blocks.
-  ok('skew: keyless snapshot (keyed:false) under a now-set key → WARN only, never a block (no false-block)',
+  // VERSION-SKEW (a keyless snapshot written before GROUNDTRUTH_KEY was set — /groundtruth-setup, a manual
+  // export, an older plugin — read under a now-configured key). There was never a signed seal to downgrade, so
+  // this is "signing not active yet", NOT tamper: a QUIET integrity_note (info), never a warn/block, never the
+  // "agent rewrote OWN state" header. (Superseded the old WARN, which alarmed on every such benign session.)
+  ok('skew: keyless snapshot (keyed:false) under a now-set key → quiet integrity_note (info), never warn/block',
     (() => { const fs = compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: null, sigValid: null, keyed: false }), { [CFG]: 'aaaa' }, new Set(), /*envBlock*/ true, /*keyConfigured*/ true);
-      return fs.length === 1 && fs[0].sev === 'warn' && fs.every(f => f.sev !== 'block'); })());
+      return fs.length === 1 && fs[0].cls === 'integrity_note' && fs[0].sev === 'info'; })());
   // Back-compat: a pre-fix snapshot with NO `keyed` field but a VALID sig is treated as keyed (clean, no warn).
   ok('skew: a pre-fix snapshot (no keyed field) with a valid sig is still treated as keyed → clean',
     compareSnapshot(snap({ [CFG]: 'aaaa' }, { sig: 'x', sigValid: true }), { [CFG]: 'aaaa' }, new Set(), false, true).length === 0);
