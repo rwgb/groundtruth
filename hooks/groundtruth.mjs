@@ -26,7 +26,7 @@
  * Pure `analyze()` + `parseTranscript()` are exported for groundtruth.test.mjs.
  */
 import { readFileSync, mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync, chmodSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';   // NOT `new URL(...).pathname` — that percent-encodes spaces (`john doe`→`john%20doe`), silently inerting every path-derived check on a spaced/Windows/cloud-synced install
@@ -352,6 +352,11 @@ export function analyze({ claim = '', diff = '', bashCmds = [], results = [], cw
     const named = m[1];
     if (seen.has(named)) continue;
     seen.add(named);
+    // A tool-file / non-repo path (proposed-rules.json, .claude/groundtruth/*, tmp|scratch, …) is GITIGNORED
+    // or ephemeral, so it can NEVER appear in a git diff — a past-tense mention (common when the work IS on
+    // Groundtruth's own docs/commands that read these files) would then ALWAYS false-flag as a no-op. The
+    // Completeness path already excludes these via NONREPO_OR_TOOL; apply the same here. (Corpus FP, session 79e00f4c.)
+    if (NONREPO_OR_TOOL.test(named)) continue;
     // basename match only — a bare `f.endsWith(named)` would let an unrelated `app/xconfig.js` satisfy a
     // claim about `config.js` (suffix-substring with no path boundary) and SUPPRESS a real no-op.
     // Case-insensitive: a claim about `schema.md` must match the repo's `SCHEMA.md` (else a false no-op).
@@ -632,6 +637,8 @@ export function parseTranscript(jsonlText) {
   let intent = '';
   const asks = [];   // MEMORY: the cumulative contract — every real user ask this session, not just #1.
   const commandsInvoked = new Set();   // unforgeable human ratification — a slash command the agent can't author
+  const commandInvocations = [];       // ORDERED (with dups) — a transcript POSITION so tamper ratification is
+                                       // "invoked THIS turn" (fresh past the snapshot mark), not "name ever seen"
   for (const e of entries) {
     if (e.type !== 'user') continue;
     const raw = textOf(e.message?.content);
@@ -643,7 +650,7 @@ export function parseTranscript(jsonlText) {
     // (`/groundtruth:groundtruth-rules`), but ratifiedBy is the bare `groundtruth-rules`. Without the
     // suffix, arming rules via the sanctioned `/groundtruth-rules` falsely trips the tamper check on its
     // OWN compiled-rules.json write.
-    if (cm) { commandsInvoked.add(cm[1]); commandsInvoked.add(cm[1].split(':').pop()); }
+    if (cm) { commandsInvoked.add(cm[1]); commandsInvoked.add(cm[1].split(':').pop()); commandInvocations.push(cm[1].split(':').pop()); }
     // POSITIVE structural signal (grounded in the transcript schema, not a text guess): a genuine typed
     // prompt carries promptSource/permissionMode and NONE of the harness's injection markers. Tool
     // results (toolUseResult), meta/compaction context (isMeta/isCompactSummary/isVisibleInTranscriptOnly),
@@ -704,7 +711,7 @@ export function parseTranscript(jsonlText) {
       if (b?.type === 'tool_result') results.push({ is_error: b.is_error === true, text: JSON.stringify(b.content || '') });
     }
   }
-  return { intent, asks, commandsInvoked, bashCmds, mcpCmds, results, bgPending: bgLaunched > bgDone, toolDiff: toolDiffParts.join('\n'), mcpSql: mcpSqlParts.join('\n') };
+  return { intent, asks, commandsInvoked, commandInvocations, bashCmds, mcpCmds, results, bgPending: bgLaunched > bgDone, toolDiff: toolDiffParts.join('\n'), mcpSql: mcpSqlParts.join('\n') };
 }
 
 /**
@@ -979,12 +986,17 @@ export function applyConfirmedDeferrals(tasks = [], confirmedIds = new Set()) {
 //   • severity is anchored to ENV block authority, NEVER to config.json — the file does not get a vote on
 //     its own tampering. So `config.json {block:false}` written this turn can't quiet its own alarm.
 const REFEREE_FILES = [
-  { re: /(^|\/)\.claude\/groundtruth\/compiled-rules\.json$/, ratifiedBy: 'groundtruth-rules', what: 'compiled-rules.json (the armed rule set)' },
+  { re: /(^|\/)\.claude\/groundtruth\/compiled-rules\.json$/, ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'], what: 'compiled-rules.json (the armed rule set)' },
   { re: /(^|\/)\.claude\/groundtruth\/config\.json$/,         ratifiedBy: 'groundtruth-block', what: 'config.json (block-mode switch)' },
   { re: /(^|\/)\.claude\/groundtruth\/[^/]*\.tasks\.json$/,   ratifiedBy: null,                what: 'the task ledger (tasks.json)' },
   { re: /(^|\/)\.claude\/groundtruth\/[^/]*\.baseline\.json$/, ratifiedBy: null,               what: 'the session baseline (baseline.json — deleting it blinds diffing to HEAD)' },
   { re: /(^|\/)\.claude\/groundtruth\/[^/]*\.refsnapshot\.json$/, ratifiedBy: null,            what: 'the referee integrity snapshot (refsnapshot.json — editing it forges the tamper baseline)' },
 ];
+// A referee-file write is ratified if ANY of its accepting slash-commands ran this turn (a human turn the
+// agent can't author). `ratifiedBy` may be a single command or a list (compiled-rules.json is armable from
+// BOTH /groundtruth-rules and /groundtruth-setup); null ⇒ no command can ratify it (always flag on touch).
+const isRatified = (ratifiedBy, commandsInvoked) =>
+  ratifiedBy != null && (Array.isArray(ratifiedBy) ? ratifiedBy : [ratifiedBy]).some(c => commandsInvoked.has(c));
 // Anchored on the tool-ledger DIFF: a Write/Edit to a referee file appears as a changed path, and the
 // write is excused only if the matching slash-command ratified it (a human turn the agent can't author).
 // The Bash/MCP write channel (config flip, snapshot forge/delete, rules disarm) is covered by the
@@ -997,7 +1009,7 @@ export function refereeTamper(diff = '', commandsInvoked = new Set(), envBlock =
   const flag = (what) => { if (seen.has(what)) return; seen.add(what); out.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn', msg: `referee state touched this turn — ${what} — verdict integrity NOT guaranteed; review required` }); };
   for (const f of changedFiles(diff)) {                                   // Write/Edit tool → path in the diff
     const hit = REFEREE_FILES.find(r => r.re.test(f));
-    if (hit && !(hit.ratifiedBy && commandsInvoked.has(hit.ratifiedBy))) flag(hit.what);
+    if (hit && !isRatified(hit.ratifiedBy, commandsInvoked)) flag(hit.what);
   }
   return out;
 }
@@ -1013,7 +1025,7 @@ export function refereeTamper(diff = '', commandsInvoked = new Set(), envBlock =
 function snapshotTargets(session) {
   return [
     { rel: '.claude/groundtruth/config.json', ratifiedBy: 'groundtruth-block' },
-    { rel: '.claude/groundtruth/compiled-rules.json', ratifiedBy: 'groundtruth-rules' },
+    { rel: '.claude/groundtruth/compiled-rules.json', ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'] },
     { rel: `.claude/groundtruth/${session}.baseline.json`, ratifiedBy: null },
   ];
 }
@@ -1023,19 +1035,55 @@ function snapHashes(cwd, session) {
   for (const { rel } of snapshotTargets(session)) { try { m[rel] = sha16(readFileSync(join(cwd, rel), 'utf8')); } catch { m[rel] = null; } }
   return m;
 }
-function writeRefSnapshot(cwd, session) {
-  const files = snapHashes(cwd, session);
+// `mark` is a transcript HIGH-WATER MARK: the COUNT of slash-command invocations recorded when this snapshot
+// was written. It is signed alongside `files` so an agent can't lower it (to re-grant an excuse) without
+// breaking the sig. Ratification is scoped to commands invoked SINCE the mark (freshRatifiers), so a command
+// already accounted for can't excuse a LATER out-of-band change — the covert-redisarm fix — WITHOUT false-
+// flagging a legitimate repeat arming (that turn re-supplies its command past the mark). A COUNT, not a name
+// set: names are monotonic (fresh-once-per-session → a 2nd `/groundtruth-rules` arming would false-fire); a
+// position advances every turn. An explicit `files` lets the Stop re-snapshot advance only legit targets.
+// `observed` is the ACTUAL current hash of each target at write time — distinct from `files`, the blessed
+// baseline. It lets the next turn tell a change that happened THIS turn (cur !== observed) from a divergence
+// HELD from a prior turn (cur === observed). A ratifier excuses only a this-turn change, so a later routine
+// command (even a read-only `/groundtruth-rules list`) can't launder a held disarm into a green. Signed too,
+// so it can't be forged (rolling back the WHOLE snapshot to an old `observed` is the separate CI-only limit).
+function writeRefSnapshot(cwd, session, mark = 0, files = null, observed = null) {
+  files = files || snapHashes(cwd, session);
+  observed = observed || files;                                  // SessionStart: nothing has diverged yet
+  mark = Math.max(0, mark | 0);
   const key = process.env.GROUNDTRUTH_KEY || '';
-  const sig = key ? createHmac('sha256', key).update(JSON.stringify(files)).digest('hex') : null;
+  const sig = key ? createHmac('sha256', key).update(JSON.stringify({ files, observed, mark })).digest('hex') : null;
   // keyed records whether THIS snapshot was written under a key, so a later turn (or an older snapshot from
   // before the key was set) isn't read as a forged/downgraded one just because the env now has a key.
-  try { writeFileSync(join(cwd, '.claude', 'groundtruth', `${session}.refsnapshot.json`), JSON.stringify({ files, sig, keyed: !!key })); } catch {}
+  try { writeFileSync(join(cwd, '.claude', 'groundtruth', `${session}.refsnapshot.json`), JSON.stringify({ files, observed, mark, sig, keyed: !!key })); } catch {}
 }
 function loadVerifiedSnapshot(cwd, session) {
   let snap; try { snap = JSON.parse(readFileSync(join(cwd, '.claude', 'groundtruth', `${session}.refsnapshot.json`), 'utf8')); } catch { return null; }
   const key = process.env.GROUNDTRUTH_KEY || '';
-  const sigValid = snap.sig ? (!!key && createHmac('sha256', key).update(JSON.stringify(snap.files || {})).digest('hex') === snap.sig) : null;
-  return { files: snap.files || {}, sig: snap.sig || null, sigValid, keyed: snap.keyed, targets: snapshotTargets(session) };
+  const mark = Number.isInteger(snap.mark) ? snap.mark : 0;
+  const observed = snap.observed || snap.files || {};            // older snapshot (no observed) ⇒ fall back to files
+  const sigValid = snap.sig ? (!!key && createHmac('sha256', key).update(JSON.stringify({ files: snap.files || {}, observed, mark })).digest('hex') === snap.sig) : null;
+  return { files: snap.files || {}, observed, mark, sig: snap.sig || null, sigValid, keyed: snap.keyed, targets: snapshotTargets(session) };
+}
+// Turn-scoped ratifiers: the command names invoked AFTER the snapshot's mark (i.e. this interval), not the
+// lifetime name set. `mark` past the end (stale/forged-high) → empty → nothing excused (safe direction). Pure.
+export function freshRatifiers(commandInvocations = [], mark = 0) {
+  return new Set((commandInvocations || []).slice(Math.max(0, mark | 0)));
+}
+// Compute the NEXT snapshot. `files` = the blessed baseline: advance a target to its current hash iff the
+// change is legitimate — unchanged, OR ratified-this-interval AND actually changed THIS turn (cur !== the prior
+// `observed`). A divergence HELD from a prior turn (cur === priorObserved) is never blessed by a later routine
+// ratifier, so an unratified tamper keeps firing until reverted. `observed` always tracks the actual current
+// hash — the this-turn-change reference for next turn. Returns both maps. Pure.
+export function advanceSnapshot(priorFiles = {}, priorObserved = {}, curFiles = {}, targets = [], freshCommands = new Set()) {
+  const files = {}, observed = {};
+  for (const { rel, ratifiedBy } of targets) {
+    const pf = priorFiles[rel] ?? null, po = priorObserved[rel] ?? null, cur = curFiles[rel] ?? null;
+    const legit = cur === pf || (isRatified(ratifiedBy, freshCommands) && cur !== po);   // unchanged, or ratified THIS-turn change
+    files[rel] = legit ? cur : pf;
+    observed[rel] = cur;
+  }
+  return { files, observed };
 }
 // PURE: compare a (verified) snapshot against current hashes. Any target changed/appeared/vanished with
 // no ratifying command = out-of-band tamper. Testable without fs.
@@ -1044,7 +1092,7 @@ function loadVerifiedSnapshot(cwd, session) {
 // but can't sign it). The old check only challenged a WRONG signature, never an ABSENT one, so the agent
 // just downgraded to unsigned. (No key configured ⇒ the snapshot is unsealed and forgeable — that is a
 // DOCUMENTED limit, not a deterministic catch: set GROUNDTRUTH_KEY, held out of the agent's tool env.)
-export function compareSnapshot(snap, curFiles = {}, commandsInvoked = new Set(), envBlock = false, keyConfigured = false) {
+export function compareSnapshot(snap, curFiles = {}, freshCommands = new Set(), envBlock = false, keyConfigured = false) {
   const out = [];
   if (!snap || !snap.files) return out;                                  // no snapshot (SessionStart didn't run)
   // Was this snapshot written under a key? New snapshots record `keyed`; for an OLD one (no field) infer it
@@ -1071,9 +1119,16 @@ export function compareSnapshot(snap, curFiles = {}, commandsInvoked = new Set()
   //     awareness, but NOT injected into the next turn and NOT flipping the verdict. Real enforcement is the
   //     signature + a CI/pre-merge gate, exactly as integrityScope already states.
   const trustworthy = keyConfigured && snap.sig && snap.sigValid === true;
+  // `freshCommands` is the ratifiers invoked SINCE this snapshot's mark (the caller computes it via
+  // freshRatifiers(commandInvocations, snap.mark)) — a command already accounted for at snapshot time cannot
+  // excuse a LATER out-of-band change. This closes the covert-redisarm window while still excusing a legitimate
+  // repeat arming (that turn re-supplies its command past the mark). Empty ⇒ nothing excused this interval.
   for (const { rel, ratifiedBy } of (snap.targets || [])) {
-    if ((snap.files[rel] ?? null) === (curFiles[rel] ?? null)) continue;  // unchanged since session start
-    if (ratifiedBy && commandsInvoked.has(ratifiedBy)) continue;          // human ran the command → legitimate
+    if ((snap.files[rel] ?? null) === (curFiles[rel] ?? null)) continue;  // unchanged vs the blessed baseline
+    // Excuse only a change that (a) is ratified this interval AND (b) actually happened THIS turn — cur differs
+    // from the prior `observed`. A divergence HELD from a prior turn (cur === observed) is NOT excused by a
+    // later routine ratifier (e.g. a read-only `/groundtruth-rules list`), so a held disarm keeps firing.
+    if (isRatified(ratifiedBy, freshCommands) && (curFiles[rel] ?? null) !== (snap.observed?.[rel] ?? null)) continue;
     if (trustworthy)
       out.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn',
         msg: `referee state changed OUT-OF-BAND since session start — ${rel.split('/').pop()} (a Bash/MCP write the diff can't see); verdict integrity NOT guaranteed` });
@@ -1165,7 +1220,7 @@ export function renderCard(findings, { session = 'unknown', intent = '', blockEn
 
   const isHonesty = f => [1, 2, 3, 4, 6, 9, 'async_done'].includes(f.cls);   // false-claim / stub / no-op / phantom / dangling-ref / special-casing / false-completion
   const sortF = a => [...a].sort((x, y) => (x.sev === 'block' ? 0 : 1) - (y.sev === 'block' ? 0 : 1));
-  const sub = f => `       ${SEV[f.sev]} ${CLASS_NAME[f.cls] || f.cls} — ${f.msg}`;
+  const sub = f => `       ${SEV[f.sev]} ${CLASS_NAME[f.cls] || f.cls}${f.rule ? ` [${f.rule}]` : ''} — ${f.msg}`;
   const hon = findings.filter(isHonesty);
   const loops = findings.filter(f => f.cls === 'openloop');                  // contract memory: asked, not delivered
   const deferred = findings.filter(f => f.cls === 'deferred');              // self-deferred: surfaced, never silent
@@ -1196,6 +1251,7 @@ export function renderCard(findings, { session = 'unknown', intent = '', blockEn
     ...sortF(hon).map(sub),
     rule.length ? `  🔴 Rules — a security / standing rule was broken in the diff:` : `  🟢 Rules — no security or directive rule broken (RLS, secrets, your compiled rules)`,
     ...sortF(rule).map(sub),
+    ...(rule.some(f => f.rule) ? [`       ⚪ a rule firing wrongly? silence it → /groundtruth-rules unarm <id> (the [id] on each line above)`] : []),
     ic.tier === 'none'
       ? `  ⚪ Completeness — n/a: this turn carries no gradeable ask (a command invocation or empty prompt), so there is nothing to check off`
       : ic.tier === 'thin'
@@ -1357,6 +1413,16 @@ export function parseDiffRange(range) {
   return { ok: true, range: r, head };
 }
 
+// The per-turn findings projection persisted to `<session>.findings.json` (re-injected into the next turn) and
+// appended to history.jsonl (the weekly harvest AND the /groundtruth-block fire-count review). Keeps only
+// surfaceable, non-quiet findings; carries the compiled-rule `id` so per-rule fire counts are computable at
+// the block gate — a bare {cls,sev,msg} could only be matched by fragile message-substring. Pure → testable.
+export function projectFindings(findings) {
+  return (findings || [])
+    .filter(f => (f.sev === 'warn' || f.sev === 'block') && !f.quiet)
+    .map(f => (f.rule ? { cls: f.cls, sev: f.sev, msg: f.msg, rule: f.rule } : { cls: f.cls, sev: f.sev, msg: f.msg }));
+}
+
 function main() {
   const git = (args, cwd) => {
     try { return execSync(`git ${args}`, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
@@ -1366,19 +1432,21 @@ function main() {
   // path). `-E` POSIX ERE (not `-P` — PCRE isn't guaranteed, and a `-P` error would throw → fail-open →
   // silently inert; the real receiver-gated classification is done in JS). It MUST distinguish `git grep`'s
   // exit-1 (clean no-match → '') from a real error (throw → checkDroppedSymbols fails open) — else every
-  // no-match reads as "grep unavailable" and the check goes silently inert. Names regex- and shell-escaped.
+  // no-match reads as "grep unavailable" and the check goes silently inert.
   const mkGrepTree = (cwd, { cached = false, tree = null } = {}) => (names) => {
     if (!names.length) return '';
     const pat = '(' + names.map(n => String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
-    const arg = "'" + pat.replace(/'/g, `'\\''`) + "'";
-    // Grep what each surface actually ships: Stop → WORKING TREE (`--untracked`, sees new-file callers);
-    // pre-commit → INDEX (`--cached`, exactly what's committed); CI → a specific TREE-ISH (the PR head,
-    // what actually merges). `git grep <tree>` takes neither flag. `tree` is a pre-validated safe ref token.
-    const cmd = tree
-      ? `git grep -I -n -E -e ${arg} ${tree}`
-      : `git grep -I -n ${cached ? '--cached' : '--untracked'} -E -e ${arg}`;
+    // execFileSync + arg ARRAY (no shell): the pattern reaches `git` verbatim. A shell string was WINDOWS-
+    // BROKEN — cmd.exe doesn't treat the POSIX single-quotes as delimiters, so `git grep` searched for the
+    // literal quoted string, matched nothing, and Class 6 went silently inert on Windows. Same fix compile-
+    // rules.mjs already uses. Grep what each surface ships: Stop → WORKING TREE (`--untracked`, sees new-file
+    // callers); pre-commit → INDEX (`--cached`); CI → a TREE-ISH (the PR head). `git grep <tree>` takes
+    // neither flag; `tree` is a pre-validated safe ref token.
+    const args = tree
+      ? ['grep', '-I', '-n', '-E', '-e', pat, tree]
+      : ['grep', '-I', '-n', cached ? '--cached' : '--untracked', '-E', '-e', pat];
     try {
-      const out = execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const out = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
       // `git grep <tree>` prefixes every hit `<tree>:path:line:…`. Strip it so classifyHits sees a clean
       // repo-relative path — otherwise the path-PREFIX filters (excludedScanPath / NOISE_PATH `(^|/)dist/`)
       // silently miss (`HEAD:dist/…` has no leading `/`), a false-fire in CI, and the quoted loc is ugly.
@@ -1637,8 +1705,10 @@ function main() {
   });
 
   // H2: an untracked file too large to fully scan is surfaced, never silently dropped (a secret padded
-  // past the cap can't buy a green — "can't fully see it" reads amber, not benign).
-  for (const f of ut.oversized) findings.push({ cls: 'R', sev: 'warn', rule: 'untracked-oversized',
+  // past the cap can't buy a green — "can't fully see it" reads amber, not benign). No `rule` field: that
+  // key is reserved for genuine compiled-rule ids (the card prints [id] + a `/groundtruth-rules unarm <id>`
+  // hint from it), and this built-in coverage-gap isn't unarmable via that command.
+  for (const f of ut.oversized) findings.push({ cls: 'R', sev: 'warn',
     msg: `untracked file too large to fully scan for secrets — ${f}; scanned first ${UNTRACKED_SCAN_CAP / 1e6} MB only, review the remainder` });
 
   // §10: also evaluate the deterministic rules compiled from this repo's own docs (CLAUDE.md/skills).
@@ -1661,8 +1731,21 @@ function main() {
     const sess = payload.session_id || 'session';
     const snap = loadVerifiedSnapshot(cwd, sess);
     const keyConfigured = !!(process.env.GROUNDTRUTH_KEY || '');
-    if (snap) findings.push(...compareSnapshot(snap, snapHashes(cwd, sess), parsed.commandsInvoked || new Set(), envBlock, keyConfigured));
-    else if (baseline) findings.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn',
+    if (snap) {
+      const cur = snapHashes(cwd, sess);
+      const invocations = parsed.commandInvocations || [];
+      const fresh = freshRatifiers(invocations, snap.mark);              // ratifiers invoked THIS interval only
+      findings.push(...compareSnapshot(snap, cur, fresh, envBlock, keyConfigured));
+      // Advance the baseline for the NEXT turn: legit (unchanged / ratified-this-interval) targets move
+      // forward — and the mark advances past this turn's commands — so a ratifier can't excuse a FUTURE
+      // out-of-band change; an unratified change is HELD at the old hash so it keeps firing until reverted.
+      // Skip a forged snapshot (sigValid===false): leave it flagging, don't re-bless it. The hook holds the
+      // env key; the agent's shell (key held out) can't re-sign, so it can't forge this re-snapshot.
+      if (snap.sigValid !== false) {
+        const adv = advanceSnapshot(snap.files, snap.observed, cur, snapshotTargets(sess), fresh);
+        writeRefSnapshot(cwd, sess, invocations.length, adv.files, adv.observed);
+      }
+    } else if (baseline) findings.push({ cls: 'tamper', sev: envBlock ? 'block' : 'warn',
       // H1: the snapshot is written right after the baseline at SessionStart, so baseline-present +
       // snapshot-ABSENT means the agent DELETED it (deletion beats the HMAC seal). "Can't see it" must
       // read RED here, not benign-skip — that conflation was the disarm. (No baseline → SessionStart
@@ -1743,7 +1826,7 @@ function main() {
     // context — the .md alone is read by no one in VS Code (the silent-warn gap). Overwritten every turn.
     // Inject only NON-quiet warn/block findings: nag-once means a hard task already surfaced in a prior turn
     // still shows on the card (f.quiet stays in `findings`) but is NOT re-injected into the agent's context.
-    const surf = findings.filter(f => (f.sev === 'warn' || f.sev === 'block') && !f.quiet).map(f => ({ cls: f.cls, sev: f.sev, msg: f.msg }));
+    const surf = projectFindings(findings);
     writeFileSync(join(dir, `${payload.session_id || 'session'}.findings.json`), JSON.stringify(surf));
     // cumulative history — one line per turn, never overwritten (weekly harvest)
     try {

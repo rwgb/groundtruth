@@ -9,9 +9,12 @@
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 
-const HOOK = new URL('./groundtruth.mjs', import.meta.url).pathname;
+// fileURLToPath (not URL.pathname): on Windows `.pathname` is `/C:/…`, which `node` resolves to a doubled
+// `C:\C:\…` and every spawned hook fails to load. fileURLToPath yields a native path on both platforms.
+const HOOK = fileURLToPath(new URL('./groundtruth.mjs', import.meta.url));
 // A synthetic high-entropy AWS-shaped key: matches the C1 detector AND must still BLOCK — it deliberately
 // AVOIDS the `AKIAIOSFODNN7EXAMPLE` example key (now allowlisted → demoted to warn) and any synthetic marker,
 // so these scenarios exercise the real block path. Not a real credential (random body).

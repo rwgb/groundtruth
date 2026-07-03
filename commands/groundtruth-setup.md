@@ -2,7 +2,7 @@
 description: "One-shot Groundtruth setup check — detects what's configured and hands you the exact actions for the rest."
 ---
 
-You are running the Groundtruth setup check. Some things a Claude Code plugin **cannot set itself** — the main `statusLine` and any env var — so this command DETECTS the current state and gives the user the exact, copy-pasteable action for anything missing. Be concise: a 4-line checklist (✓ / ✗ + the one-line fix), then a one-line summary. Do NOT change any setting yourself except where a sub-command is the right tool; for `settings.local.json` edits, SHOW the user the block to paste (it's their file).
+You are running the Groundtruth setup check. Some things a Claude Code plugin **cannot set itself** — the main `statusLine` and any env var — so this command DETECTS the current state and gives the user the exact, copy-pasteable action for anything missing. Be concise: a 5-line checklist (✓ / ✗ + the one-line fix), then a one-line summary. The two things this command DOES execute — both only after the user says yes — are (a) arming clean rules **in warn** (item 1) and (b) the `settings.local.json` wiring (badge/env, the closing offer). Everything else you DETECT and hand back the fix; for `settings.local.json` edits SHOW the user the block to paste (it's their file). Never enable block mode or arm a `review`-status rule on your own.
 
 First, resolve two paths you'll need:
 - the **project root** = the cwd.
@@ -10,8 +10,12 @@ First, resolve two paths you'll need:
 
 Then check each item and report `✓`/`✗`:
 
-1. **Rules approved** (the core gate). Read `.claude/groundtruth/proposed-rules.json` and `compiled-rules.json`. Count clean-proposed (`status:"armable"`) vs approved.
-   - ✗ if any clean rule is unapproved → **"`N` rules proposed, none/some armed — reply `/groundtruth-rules approve-all` to arm the clean ones (or `/groundtruth-rules` to review first). Nothing is enforced until you do."**
+1. **Rules — arm the clean ones inline** (this command is the installer; don't punt to `/groundtruth-rules`). Read `.claude/groundtruth/proposed-rules.json` and `compiled-rules.json`. Count clean-proposed (`status:"armable"`, not already armed) vs any that `status:"review"` (already match committed code — over-broad risk).
+   - If clean rules are unarmed → show the count and **ask before arming**: *"Found `N` clean rules extracted from your docs (they match zero existing code, so they can only fire on new code). Arm them **in warn** now? `[yes / review each / skip]`."* This is safe because arming in warn only adds a line to the verdict card — it never blocks — and each firing prints its `[id]` so you can `/groundtruth-rules unarm <id>` in one step. Warn ≠ enforce; block stays a separate, deliberate step (item 3).
+     - **yes** → arm exactly the clean candidates: write `.claude/groundtruth/compiled-rules.json` as the union of already-approved + newly-approved, keeping only runtime fields (`id, source, kind, file_re, line_re, severity, message`, `unless_re` if present), `severity` defaulting to `"warn"`, preserving any existing rule's severity, deduped by `id`. (This write is legitimate — `/groundtruth-setup` is a ratified writer of compiled-rules.json, same as `/groundtruth-rules`.) Confirm: *"Armed N rules at warn — active next turn."*
+     - **review each** → hand off to `/groundtruth-rules` (the ledger) for a rule-by-rule look; arm nothing here.
+     - **skip** → arm nothing; note it stays available via `/groundtruth-rules approve-all` later.
+   - Never arm a `status:"review"` candidate here — those match existing code and need a human eye in `/groundtruth-rules`. Surface their count as a heads-up.
    - If `proposed-rules.json` is missing, init hasn't run: say "start a fresh session, or run `node \"<HOOKS>/compile-rules.mjs\" .`".
 
 2. **Status badge** (recommended — in the VS Code extension, warn/clean verdicts only show via the badge). Read `.claude/settings.local.json` (and `settings.json`) for a `statusLine` key.
@@ -37,7 +41,7 @@ Then check each item and report `✓`/`✗`:
    - ✗ if absent → **"run `node \"<HOOKS>/groundtruth.mjs\" --install-pre-commit` — scans the STAGED diff on every commit (secrets · RLS · stubs · dropped-symbol dangling refs). It's fail-open (never blocks on its own breakage), won't clobber a non-Groundtruth hook, and `git commit --no-verify` bypasses once. Re-run it after a plugin update if the path moves."**
    - If a foreign `pre-commit` already exists, `--install-pre-commit` refuses and prints the one line to add manually.
 
-End with one summary line, e.g.: `Setup → rules: ✗ run approve-all · badge: ✗ · block: warn (on = enforce) · key: off (CI = real enforcement) · pre-commit: ✗ install.`
+End with one summary line, e.g.: `Setup → rules: N clean unarmed (arm in warn?) · badge: ✗ · block: warn (on = enforce) · key: off (CI = real enforcement) · pre-commit: ✗ install.` (after arming: `rules: armed N (warn)`).
 
 Then **offer to do the `settings.local.json` parts yourself** (the user asked for this): *"Want me to set up `settings.local.json` now — generate a random key, add the status badge + `GROUNDTRUTH_BLOCK=1`, and make sure the file is gitignored?"* If they say yes:
 1. Generate a key: ``node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`` — capture the output; do NOT invent one.

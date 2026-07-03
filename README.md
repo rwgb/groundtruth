@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/deterministic-no%20LLM%20%C2%B7%20no%20network%20%C2%B7%20no%20API%20key-111111?style=flat-square" alt="Deterministic: no LLM, no network, no API key">
   <img src="https://img.shields.io/badge/runs%20on-Claude%20Code-111111?style=flat-square" alt="Runs on Claude Code">
   <img src="https://img.shields.io/github/v/release/akahkhanna/groundtruth?style=flat-square&color=111111&label=release" alt="Release">
-  <img src="https://img.shields.io/badge/self--checks-362%20%C2%B7%20red--team%2014%2F14-111111?style=flat-square" alt="362 self-checks, red-team 14/14">
+  <img src="https://img.shields.io/badge/self--checks-392%20%C2%B7%20red--team%2014%2F14-111111?style=flat-square" alt="392 self-checks, red-team 14/14">
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT license">
 </p>
 
@@ -62,7 +62,9 @@ Each step unlocks the next. You can stop at any stage and still get value.
    ```
    On session start Groundtruth already read your docs (`CLAUDE.md`, `SCHEMA.md`, your skills, …) and
    **proposed** deterministic rules. `approve-all` arms the clean ones (zero existing-code hits); or run
-   `/groundtruth-rules` bare to review and name specific ids. It's a permission gate, not automatic.
+   `/groundtruth-rules` bare to review and name specific ids. **`/groundtruth-setup` will also arm the clean
+   ones inline, in warn, on a single yes** — the same thing, fewer steps. Either way it's a permission gate,
+   not automatic; if an armed rule ever fires wrongly, the card prints its `[id]` — `/groundtruth-rules unarm <id>`.
 
 5. **Enforce, once you trust the precision** — `/groundtruth-block on`
    (or set `GROUNDTRUTH_BLOCK=1` in `.claude/settings.local.json` — the un-disablable anchor). A
@@ -125,8 +127,8 @@ could see. Groundtruth catches it because the auditor never did the work, so it 
 
 A verifier is only worth trusting if it's honest about its own misses, so here's the real state, not a marketing number.
 
-- **The precision was rebuilt against real data, not intuition.** We read every finding Groundtruth emitted across **14 of its own recent sessions** — **22 findings, 73% of them false positives** — and froze those into a labeled [corpus](hooks/corpus.fixture.json) (reproduce with [`node benchmarks/corpus-precision.mjs`](benchmarks/)). Then two independent adversarial review passes tried to break the fixes and built their own executable test cases.
-- **Dogfood result:** running Groundtruth's audit on its own source, self-match false positives in the engine went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 362**, red-team **14/14**.
+- **The precision was rebuilt against real data, not intuition.** We read every finding Groundtruth emitted across **15 of its own recent sessions** — **23 findings, 74% of them false positives** — and froze those into a labeled [corpus](hooks/corpus.fixture.json) (reproduce with [`node benchmarks/corpus-precision.mjs`](benchmarks/)). Then independent adversarial review passes tried to break the fixes and built their own executable test cases.
+- **Dogfood result:** running Groundtruth's audit on its own source, self-match false positives in the engine went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 392**, red-team **14/14**.
 - **Class 6 (dropped symbol) was built precision-first, adversarially.** A "refactor" that silently drops a method is caught only by its *consequence* — a call that no longer resolves — never by guessing rename intent, so a rename/merge/casing-change with callers updated stays **silent** and only a genuinely dangling reference fires (quoting the callsite). Two review passes drove it from a naive "defined-nowhere" check (which false-fired on every rename) to a receiver-gated dangling-call test; the TypeScript-signature and spaced-path (`%20`) holes they found are fixed and pinned by fixtures. It runs across the whole ladder: **warn** on Stop + pre-commit, **block** in CI.
 - **Every fix is catalogued** with symptom → root cause → fix → regression test in **[FIXES.md](FIXES.md)** — including the two *critical* holes review found (a live secret demote-able by an adjacent comment; the agent demoting its own task by naming the file in its reply), and the residual deterministic-NL limits it does **not** fully close.
 - **Still pending (named, not hidden):** a live before/after **false-positive rate across a week of real sessions** — Groundtruth ships an append-only history log + a `gt-harvest` reader so you can measure it on *your* repo. That headline number is the next measurement, and it will be published the same way: with its misses.
@@ -164,11 +166,11 @@ GROUNDTRUTH · Tier-1 · demo1a2b
 | Command | What it does |
 |---|---|
 | `/groundtruth` | Show the latest verdict card for this session. |
-| `/groundtruth-rules` | Review + approve the rules compiled from your docs — **the permission gate**. `approve-all` arms every *clean* candidate; or name rule ids to arm specific ones. Nothing arms until you do. |
+| `/groundtruth-rules` | Review + approve the rules compiled from your docs — **the permission gate**. `approve-all` arms every *clean* candidate; name rule ids to arm specific ones; `unarm <id>` silences one that's firing wrongly (the card prints each rule's `[id]`). Nothing arms until you do. |
 | `/groundtruth-rules-ai` | **Opt-in, off by default.** Fans out an agent to read your docs in *prose* and propose the regex-enforceable rules the literal extractor missed — routed through the **same** grounding + approval gate. Nothing arms; the model runs only when you invoke this. |
 | `/groundtruth-audit` | Scan the whole repo for the debt agents leave behind (stubs/TODOs, phantom imports) — an inventory, **not** a verdict. The cheapest way to see Groundtruth work on your code. |
-| `/groundtruth-block on｜off` | Opt into blocking (default is **warn**). A block-severity finding refuses the stop and hands the gap back until it's fixed (retry cap → escalate, never wedges). |
-| `/groundtruth-setup` | One-shot setup check — detects what's configured, hands you the exact actions for the rest. |
+| `/groundtruth-block on｜off` | Opt into blocking (default is **warn**). `on` shows an itemized, fire-count-backed confirmation of what will start halting (so block never enforces a rule you haven't seen) before it flips. A block-severity finding then refuses the stop and hands the gap back until it's fixed (retry cap → escalate, never wedges). |
+| `/groundtruth-setup` | One-shot **installer**: detects what's configured, arms your clean rules inline (in warn, on consent), and hands you the exact actions for the rest (badge, env). |
 | `/groundtruth-help` | What Groundtruth checks, and its commands. |
 
 CLI (no install needed): `node hooks/groundtruth.mjs --audit` runs the repo audit; `--latest` prints the
@@ -358,6 +360,16 @@ out of the block. The disk snapshot + signature are kept as defense-in-depth (th
 naive cases), never trusted as state — but chasing the laundered case with more in-session pattern-matching is
 the cat-and-mouse this design retired three passes ago. The deterministic answer is the next paragraph.
 
+**Two later passes tightened the multi-turn evidence** (the parts that *are* deterministically closable in-session).
+Ratification is now **turn-scoped**: a `/groundtruth-*` command invoked once no longer excuses a *later* out-of-band
+change (the covert re-disarm — arm rules, then Bash-`echo '[]'` over them many turns on), because the referee
+snapshot carries a *signed transcript high-water mark* and only a ratifier invoked **since** it counts. And a
+**signed per-target `observed` hash** means a ratifier excuses only a change made *this* turn — so a routine
+command (even a read-only `/groundtruth-rules list`) can't launder a tamper *held* from a prior turn into a green.
+The one in-session residual that remains is **snapshot rollback-replay** (an older validly-signed snapshot can be
+restored — HMAC proves authenticity, not recency); like the laundered-helper row above, it is closed only by CI's
+fresh per-run snapshot. Mechanism + regression tests in [FIXES.md](FIXES.md).
+
 **To upgrade evidence → prevention, the platform must** (these are deployment requirements, not things the
 hook can self-enforce): (1) hold `GROUNDTRUTH_BLOCK` / `GROUNDTRUTH_KEY` in an environment the agent's **Bash
 tool cannot read** (otherwise `printenv` forges a valid signature); (2) keep the **transcript unwritable** by
@@ -372,7 +384,7 @@ non-adversarial use only.
 ## Tests
 
 ```bash
-node hooks/groundtruth.test.mjs   # 362 assert-based unit checks, no deps
+node hooks/groundtruth.test.mjs   # 392 assert-based unit checks, no deps
 node hooks/redteam.mjs            # LIVE adversarial harness (10 scenarios, 14 checks) — sandboxed, exits non-zero if a rail fell
 ```
 

@@ -4,7 +4,7 @@ A verifier is only worth trusting if it publishes its own miss rate. This direct
 
 ## 1. Captured precision (reproducible now)
 
-The precision work was driven by real data: every finding Groundtruth emitted across **14 of its own recent sessions** (auditing itself), hand-labeled FP / TP / borderline and frozen in [`../hooks/corpus.fixture.json`](../hooks/corpus.fixture.json).
+The precision work was driven by real data: every finding Groundtruth emitted across **15 of its own recent sessions** (auditing itself), hand-labeled FP / TP / borderline and frozen in [`../hooks/corpus.fixture.json`](../hooks/corpus.fixture.json).
 
 ```bash
 node corpus-precision.mjs
@@ -12,7 +12,7 @@ node corpus-precision.mjs
 
 Prints the FP/TP breakdown by label and bucket, and the false-positive rate **at capture** (majority FP — the number v0.9.0 set out to cut). Every FP on the corpus carries the phase that fixed it; the fix + regression test is in [`../FIXES.md`](../FIXES.md).
 
-**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 362**, red-team **14/14**.
+**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 392**, red-team **14/14**.
 
 ## 2. Live false-positive rate on your repo (the pending headline)
 

@@ -1,11 +1,11 @@
 ---
 description: "Review the rules Groundtruth extracted from your docs and approve which to arm (the permission gate)."
-argument-hint: "(optional)  list | approve-all | <rule-id …>"
+argument-hint: "(optional)  list | approve-all | unarm <id …> | <rule-id …>"
 ---
 
 Groundtruth's compiler reads your project's rule docs — `CLAUDE.md`, `SCHEMA.md`, `**/ARCHITECTURE.md`, `docs/*.md`, every `.claude/skills/**/SKILL.md`, every `.claude/agents/*.md`, `.cursorrules`/`.windsurfrules` — and **proposes** deterministic rules. Nothing is enforced until you approve it here. This command is that gate.
 
-Argument: **$ARGUMENTS** — empty or `list` ⇒ just show the candidates; `approve-all` ⇒ arm every *clean* candidate; otherwise a space-separated list of rule ids to arm.
+Argument: **$ARGUMENTS** — empty or `list` ⇒ just show the candidates; `approve-all` ⇒ arm every *clean* candidate; `unarm <id …>` ⇒ **remove** those rules from the active set (silence a rule that's firing wrongly — the verdict card prints each rule's `[id]` for exactly this); otherwise a space-separated list of rule ids to arm.
 
 Do this:
 
@@ -16,8 +16,9 @@ Do this:
    - **Clean — safe to approve** (proposed, `status: "armable"`, not already armed): `id` · message · source. These match **zero** existing code lines, so arming them can only fire on *new* code — low risk.
    - **Needs review** (`status: "review"`): `id` · message · `hits` existing code matches · the `sample` line. **Warn the user**: a candidate that already matches committed code is either (a) catching a real existing problem, or (b) over-broad and will false-fire on legitimate code (e.g. a doc says ``avoid `map` `` but `.map(` is everywhere). Only arm one of these if you've read the sample and confirmed it's a real rule with the right scope.
 
-3. Decide what to arm based on the argument:
+3. Decide what to do based on the argument:
    - `approve-all` → arm all **clean** candidates only. Never auto-arm a review candidate — those need a human eye.
+   - `unarm <id …>` → **remove** exactly those ids from `compiled-rules.json` (write back the array minus them; if a named id isn't armed, say so and skip it). This is the frictionless "silence a wrong rule" path — no doc edit, no restart. Confirm which were removed and that they stop firing next turn. Then STOP (don't fall through to the arm path).
    - a list of ids → arm exactly those (a review candidate is allowed only when explicitly named).
    - empty / `list` → show the table, write nothing, and end with a crystal-clear next action the user can copy verbatim — e.g.:
      > **To arm all N clean rules, reply with the whole line: `/groundtruth-rules approve-all`** — or just tell me "approve the clean rules" in plain words and I'll arm them. To pick specific ones: `/groundtruth-rules <id> <id>`. To skip for now: do nothing — nothing is enforced until you approve.

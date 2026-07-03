@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync as fsWrite, mkdirSync as fsMkdir, rmSync } f
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop, preCommitHookScript, parseDiffRange } from './groundtruth.mjs';
+import { analyze, parseTranscript, scanContent, attributeDebt, runCompiledRules, compileRuleRe, intentConfidence, renderCard, projectFindings, advanceSnapshot, freshRatifiers, remediationDecision, renderCorrective, openLoops, runProcedures, envFindings, updateTaskLedger, loadGtConfig, pendingApprovals, applyConfirmedDeferrals, humanDeferrals, taskId, refereeTamper, compareSnapshot, integrityScope, GAMED_FILE_RE, priorFindingsContext, sessionHasCommit, proposedStale, isTrackableRequest, isSecret, excludedScanPath, dropExcludedFiles, classifyDeliverables, surfaceOpenLoop, preCommitHookScript, parseDiffRange } from './groundtruth.mjs';
 import { parseCorrectivePairs, parseForbidTokens, isArmableToken, extractCandidates, compile, repoSourceExts } from './compile-rules.mjs';
 import { checkDroppedSymbols, collectDefs } from './symbol-integrity.mjs';
 
@@ -108,6 +108,15 @@ ok('C3 bug5: a .tsx claim present in the diff is NOT a false no-op',
 // ...but a genuinely-absent .json claim STILL fires (the boundary fix must not blunt real detection).
 ok('C3 bug5: a .json claim ABSENT from the diff still fires (detection preserved)',
   has(analyze({ claim: 'Updated config.json.', diff: '+++ b/other.json\n+x' }), 3));
+// Corpus FP (session 79e00f4c): a past-tense mention of a GITIGNORED tool-file (proposed-rules.json — common
+// when the work is on GT's own commands that read it) must NOT fire — it can never appear in a git diff, so
+// it would ALWAYS false-flag. Same NONREPO_OR_TOOL exclusion the Completeness path uses.
+ok('C3 FP-fix: a claim naming the tool-file proposed-rules.json does NOT fire (gitignored → never in diff)',
+  !has(analyze({ claim: 'Updated proposed-rules.json with the new candidates.', diff: '+++ b/other.js\n+x' }), 3));
+ok('C3 FP-fix: a claim naming a .claude/groundtruth path does NOT fire (tool-file exclusion)',
+  !has(analyze({ claim: 'Wrote .claude/groundtruth/compiled-rules.json.', diff: '+++ b/other.js\n+x' }), 3));
+ok('C3 FP-fix: the exclusion is narrow — a normal absent-file claim still fires (detection preserved)',
+  has(analyze({ claim: 'Updated cart.js.', diff: '+++ b/other.js\n+x' }), 3));
 // Line-179 sibling: a bare endsWith(named) let an unrelated suffix-substring path satisfy the claim and
 // suppress a real no-op. With basename-only matching, an unrelated `app/xconfig.js` must NOT count.
 ok('C3 fires: an unrelated xconfig.js does NOT satisfy a claim about config.js (basename boundary)',
@@ -496,6 +505,44 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     !/await approval/.test(renderCard([], { session: 's', intent: 'do a thing in x.js', pendingRules: 0 })));
 }
 
+// ── projectFindings — the history/snapshot projection must CARRY the rule id (so the block-flip fire-count
+//    review can attribute a warn back to a specific armed rule; a bare {cls,sev,msg} can't be counted per-rule) ──
+{
+  const src = [
+    { cls: 'R', sev: 'warn', rule: 'no-foo', msg: 'no foo: bar (x.js)' },
+    { cls: 1, sev: 'block', msg: 'false test claim' },
+    { cls: 2, sev: 'warn', msg: 'quiet nag', quiet: true },     // quiet → dropped (not re-injected / not double-counted)
+    { cls: 3, sev: 'info', msg: 'awareness only' },             // non-surfaceable → dropped
+  ];
+  const proj = projectFindings(src);
+  ok('projectFindings: carries the compiled-rule id so fire counts are per-rule attributable',
+    proj.some(f => f.cls === 'R' && f.rule === 'no-foo'));
+  ok('projectFindings: a non-rule finding gets NO rule key (not undefined-stamped)',
+    proj.some(f => f.cls === 1) && !('rule' in proj.find(f => f.cls === 1)));
+  ok('projectFindings: drops quiet + non-surfaceable findings (only warn/block, non-quiet survive)',
+    proj.length === 2 && proj.every(f => (f.sev === 'warn' || f.sev === 'block') && !f.quiet));
+  ok('projectFindings: null/empty input → [] (no crash)',
+    Array.isArray(projectFindings(null)) && projectFindings(null).length === 0);
+
+  // card: the rule id is printed inline ([id]) + a one-command unarm hint, so silencing a wrong rule is cheap
+  const card = renderCard([{ cls: 'R', sev: 'warn', rule: 'no-foo', msg: 'no foo: bar (x.js)' }], { session: 's', intent: 'edit x.js' });
+  ok('renderCard: a compiled-rule finding prints its [id] inline (cheap-unarm precondition)',
+    card.includes('[no-foo]'));
+  ok('renderCard: rule findings carry a one-command unarm hint',
+    /unarm <id>/.test(card));
+  ok('renderCard: an honesty finding (no rule id) gets no [] bracket noise',
+    !/\[\s*\]|\[undefined\]/.test(renderCard([{ cls: 1, sev: 'block', msg: 'false test claim' }], { session: 's', intent: 'run tests' })));
+  // reserved-key convention: a built-in cls:R coverage-gap (e.g. the H2 oversized-file check) carries NO
+  // `rule` id, so it must NOT advertise an unarm hint for an id that /groundtruth-rules can't unarm.
+  {
+    const c = renderCard([{ cls: 'R', sev: 'warn', msg: 'untracked file too large to fully scan for secrets — big.bin' }], { session: 's', intent: 'add x.js' });
+    ok('renderCard: a built-in R coverage-gap (no rule id) gets no [id] bracket',
+      !/\[/.test(c.split('\n').find(l => l.includes('too large')) || '['));
+    ok('renderCard: no unarm hint when no finding carries a real compiled-rule id',
+      !/unarm <id>/.test(c));
+  }
+}
+
 // ── §11 referee-state tamper tripwire — the agent reaching BACK to rewrite the checker's OWN ground
 //    truth (rules / block switch / ledger). Severity anchored to ENV (not config); a write is legit only
 //    if ratified by the unforgeable slash-command turn. ──
@@ -508,6 +555,10 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     refereeTamper(W('.claude/groundtruth/compiled-rules.json'), new Set(), false)[0].sev === 'warn');
   ok('tamper: a rules write RATIFIED by the human running /groundtruth-rules is legitimate (not flagged)',
     refereeTamper(W('.claude/groundtruth/compiled-rules.json'), new Set(['groundtruth-rules']), false).length === 0);
+  ok('tamper: /groundtruth-setup ALSO ratifies a compiled-rules.json write (inline arming — installer model)',
+    refereeTamper(W('.claude/groundtruth/compiled-rules.json'), new Set(['groundtruth-setup']), true).length === 0);
+  ok('tamper: /groundtruth-setup does NOT ratify a config.json (block-switch) write — still setup-scoped to rules',
+    refereeTamper(W('.claude/groundtruth/config.json'), new Set(['groundtruth-setup']), false).some(f => f.cls === 'tamper'));
   ok('tamper: config.json is ratified only by /groundtruth-block — the wrong command does not excuse it',
     refereeTamper(W('.claude/groundtruth/config.json'), new Set(['groundtruth-rules']), false).some(f => f.cls === 'tamper') &&
     refereeTamper(W('.claude/groundtruth/config.json'), new Set(['groundtruth-block']), false).length === 0);
@@ -526,6 +577,13 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
   // own compiled-rules.json write (observed live).
   const nsTx = parseTranscript(JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '<command-name>/groundtruth:groundtruth-rules</command-name>' }] } }));
   ok('parseTranscript: a namespaced/slashed plugin command normalizes to its bare suffix', nsTx.commandsInvoked.has('groundtruth-rules'));
+  // ordered invocations (with dups) — the position source for turn-scoped tamper ratification (freshRatifiers)
+  const twoRuns = parseTranscript([
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '<command-name>groundtruth-rules</command-name>' }] } }),
+    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '<command-name>groundtruth-rules</command-name>' }] } }),
+  ].join('\n'));
+  ok('parseTranscript: commandInvocations records each invocation IN ORDER with dups (not just membership)',
+    Array.isArray(twoRuns.commandInvocations) && twoRuns.commandInvocations.length === 2 && twoRuns.commandInvocations.every(c => c === 'groundtruth-rules'));
   ok('tamper: arming via /groundtruth:groundtruth-rules ratifies its OWN compiled-rules.json write (no false positive)',
     refereeTamper('+++ b/.claude/groundtruth/compiled-rules.json\n+[]', nsTx.commandsInvoked, false).length === 0);
 }
@@ -568,6 +626,73 @@ ok('no-git: no Edit/Write calls → empty toolDiff (nothing to check)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }).every(f => f.cls === 'integrity_note' && f.sev === 'info'));
   ok('snapshot: the same change RATIFIED by /groundtruth-block is legitimate (not flagged at all)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }), { [CFG]: 'bbbb' }, new Set(['groundtruth-block'])).length === 0);
+  // multi-ratifier: compiled-rules.json accepts EITHER /groundtruth-rules OR /groundtruth-setup (inline arming)
+  {
+    const RULES = '.claude/groundtruth/compiled-rules.json';
+    const snapR = ({ files, cur, cmds, key }) => compareSnapshot(
+      { files, sig: 'x', sigValid: true, targets: [{ rel: RULES, ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'] }] },
+      cur, cmds, /*envBlock*/ true, /*keyConfigured*/ key);
+    ok('snapshot: an out-of-band compiled-rules change ratified by /groundtruth-setup is legitimate (installer arming)',
+      snapR({ files: { [RULES]: 'aaaa' }, cur: { [RULES]: 'bbbb' }, cmds: new Set(['groundtruth-setup']), key: true }).length === 0);
+    ok('snapshot: the SAME change with NO accepting command still fires (trustworthy regime) — setup does not blanket-excuse',
+      snapR({ files: { [RULES]: 'aaaa' }, cur: { [RULES]: 'bbbb' }, cmds: new Set(['groundtruth-block']), key: true }).some(f => f.cls === 'tamper'));
+  }
+  // snapshot-SCOPED ratification: compareSnapshot excuses a changed target only by a FRESH ratifier (invoked
+  // this interval, per freshRatifiers). A disarm with NO fresh ratifier fires; one with a fresh ratifier is
+  // excused (legit re-arm). This is the covert-redisarm fix.
+  {
+    const RULES = '.claude/groundtruth/compiled-rules.json';
+    // observed defaults to the baseline (files) — so a fresh change (cur !== observed) exercises the ratifier path
+    const tw = (files) => ({ files, observed: files, sig: 'x', sigValid: true, targets: [{ rel: RULES, ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'] }] });
+    ok('snapshot-scope: a Bash disarm with NO fresh ratifier this interval still FIRES (covert-redisarm closed)',
+      compareSnapshot(tw({ [RULES]: 'armed' }), { [RULES]: 'disarmed' }, new Set(), true, true).some(f => f.cls === 'tamper'));
+    ok('snapshot-scope: the SAME change WITH a fresh ratifier is excused (legit arming this turn)',
+      compareSnapshot(tw({ [RULES]: 'armed' }), { [RULES]: 'disarmed' }, new Set(['groundtruth-setup']), true, true).length === 0);
+  }
+  // observed-hash close (Residual A / later-ratifier launder): a fresh ratifier excuses only a change that
+  // happened THIS turn (cur !== observed), NOT a divergence HELD from a prior turn (cur === observed) — so a
+  // later routine command can't launder a held disarm, WITHOUT false-flagging legitimate arming.
+  {
+    const RULES = '.claude/groundtruth/compiled-rules.json';
+    const snap = (files, observed) => ({ files, observed, sig: 'x', sigValid: true, targets: [{ rel: RULES, ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'] }] });
+    ok('observed-close: a fresh ratifier does NOT excuse a HELD disarm (cur === observed) — routine-command launder killed',
+      compareSnapshot(snap({ [RULES]: 'armed' }, { [RULES]: 'disarmed' }), { [RULES]: 'disarmed' }, new Set(['groundtruth-rules']), true, true).some(f => f.cls === 'tamper'));
+    ok('observed-close: a fresh ratifier DOES excuse a THIS-turn change (cur !== observed) — legit arming not false-flagged',
+      compareSnapshot(snap({ [RULES]: 'armedA' }, { [RULES]: 'armedA' }), { [RULES]: 'armedB' }, new Set(['groundtruth-rules']), true, true).length === 0);
+  }
+  // freshRatifiers — the transcript-POSITION scoping that makes ratification "this turn", not "name ever seen".
+  // The load-bearing regression Fable's break-attempt surfaced: a SECOND legitimate arming (same command name,
+  // later turn) must be excused, NOT false-flagged as tamper — a monotonic name set would have failed here.
+  {
+    ok('freshRatifiers: a command past the mark is fresh (this-interval ratifier)',
+      freshRatifiers(['groundtruth-rules'], 0).has('groundtruth-rules'));
+    ok('freshRatifiers: a command AT/BEFORE the mark is not fresh (already accounted for)',
+      !freshRatifiers(['groundtruth-rules'], 1).has('groundtruth-rules'));
+    ok('freshRatifiers REGRESSION: a 2nd same-name arming past the mark IS fresh (iterative arming not false-flagged)',
+      freshRatifiers(['groundtruth-rules', 'groundtruth-rules'], 1).has('groundtruth-rules'));
+    ok('freshRatifiers: mark past the end (stale/forged-high) → empty → nothing excused (safe direction)',
+      freshRatifiers(['groundtruth-setup'], 5).size === 0);
+    // end-to-end shape: turn N arms (fresh) → excused; turn N+k disarm with no new command → fires.
+    const inv = ['groundtruth-rules'];                      // only arming turn ran a command
+    ok('freshRatifiers e2e: after the arming turn is marked, a later disarm has no fresh ratifier → would fire',
+      freshRatifiers(inv, inv.length).size === 0);
+  }
+  // advanceSnapshot: the Stop re-snapshot advances the blessed baseline for legit targets (unchanged, or a
+  // ratified THIS-turn change) but HOLDS an unratified change — and never blesses a HELD divergence even under a
+  // fresh ratifier (the launder-into-baseline close). `observed` always tracks the actual current hash.
+  {
+    const RULES = '.claude/groundtruth/compiled-rules.json', CFG = '.claude/groundtruth/config.json';
+    const T = [{ rel: RULES, ratifiedBy: ['groundtruth-rules', 'groundtruth-setup'] }, { rel: CFG, ratifiedBy: 'groundtruth-block' }];
+    const pf = { [RULES]: 'armed', [CFG]: 'cfg0' }, po = { [RULES]: 'armed', [CFG]: 'cfg0' };
+    ok('advance: an unratified out-of-band change is HELD at the prior baseline (keeps firing next turn)',
+      advanceSnapshot(pf, po, { [RULES]: 'disarmed', [CFG]: 'cfg0' }, T, new Set()).files[RULES] === 'armed');
+    ok('advance: a ratified THIS-turn change (cur !== observed) advances the baseline (legit arming baked in)',
+      advanceSnapshot(pf, po, { [RULES]: 'armedB', [CFG]: 'cfg0' }, T, new Set(['groundtruth-setup'])).files[RULES] === 'armedB');
+    ok('advance: observed always tracks the actual current hash (this-turn-change reference for next turn)',
+      advanceSnapshot(pf, po, { [RULES]: 'disarmed', [CFG]: 'cfg0' }, T, new Set()).observed[RULES] === 'disarmed');
+    ok('advance CLOSE: a fresh ratifier does NOT bless a HELD divergence (cur === observed) into the baseline',
+      advanceSnapshot({ [RULES]: 'armed' }, { [RULES]: 'disarmed' }, { [RULES]: 'disarmed' }, [{ rel: RULES, ratifiedBy: ['groundtruth-rules'] }], new Set(['groundtruth-rules'])).files[RULES] === 'armed');
+  }
   ok('snapshot (unsigned): a referee file that VANISHED → quiet integrity_note (info)',
     compareSnapshot(snap({ [CFG]: 'aaaa' }), {}).every(f => f.cls === 'integrity_note' && f.sev === 'info'));
   // In the TRUSTWORTHY regime (key + valid sig) the out-of-band change IS a loud finding, env-anchored.
