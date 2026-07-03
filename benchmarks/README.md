@@ -10,7 +10,7 @@ The precision work was driven by real data: every finding Groundtruth emitted ac
 node corpus-precision.mjs
 ```
 
-Prints the FP/TP breakdown by label and bucket, and the false-positive rate **at capture** (majority FP — the number v0.9.0 set out to cut). Every FP on the corpus carries the phase that fixed it; the fix + regression test is in [`../FIXES.md`](../FIXES.md).
+Prints the FP/TP breakdown by label and bucket, and the false-positive rate **at capture** (majority FP — the number the v0.8.0 precision work set out to cut). Every FP on the corpus carries the phase that fixed it; the fix + regression test is in [`../FIXES.md`](../FIXES.md).
 
 **Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 392**, red-team **14/14**.
 
