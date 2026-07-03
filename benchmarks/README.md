@@ -12,7 +12,7 @@ node corpus-precision.mjs
 
 Prints the FP/TP breakdown by label and bucket, and the false-positive rate **at capture** (majority FP — the number the v0.8.0 precision work set out to cut). Every FP on the corpus carries the phase that fixed it; the fix + regression test is in [`../FIXES.md`](../FIXES.md).
 
-**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 393**, red-team **14/14**.
+**Dogfood after the fixes** (reproduce with `node ../hooks/groundtruth.mjs --audit` from the repo root): self-match false positives in the engine source went to **0** (`Class 2`) and phantom-import FPs **3 → 0** (`Class 4`); self-checks **242 → 396**, red-team **14/14**.
 
 ## 2. Live false-positive rate on your repo (the pending headline)
 
@@ -31,6 +31,15 @@ precision = (finding rows − false positives) / turns
 ```
 
 That number — published with its misses, not just its wins — is the one worth publishing. It is **not** in this README yet, on purpose: the instrument shipped in v0.9.0, so the first honest week of v0.9.0 data doesn't exist until a week after you install it. Publishing it early would be the exact overclaimed "done" Groundtruth exists to catch.
+
+### First harvest (2026-07, v0.9.2→0.9.3 dev) — why it is *not* published as a rate
+
+A 30-day `gt-harvest` over a live workspace saw **74 real Stop turns · 45 findings**. We deliberately do **not** turn that into a headline FP rate, because it is not representative: **43 of the 45 findings came from a single anomalous session** — building the groundtruth repo *from* a different repo's workspace — so the sample is 96% one session's artifacts, not normal use. What it *did* surface honestly:
+
+- The **integrity keyless-snapshot warn was the dominant recurring FP (17 of 45)** — now fixed in **v0.9.3** (a keyless baseline under a later-set key downgrades to a quiet info note, not a tamper warn). Real-session data pointed the fix at the right target.
+- The **cross-workspace silent-no-op** (claiming a change to a file outside the audited workspace, so it's "absent from the diff") — a documented limitation: Groundtruth audits the *session's* workspace, not files edited in another repo.
+
+The representative headline — a week of **in-workspace, post-0.9.3** sessions — remains the pending number. This first pass validated the harvester and the 0.9.3 integrity fix; it did not (and could not honestly) produce the rate.
 
 ## Method notes
 
